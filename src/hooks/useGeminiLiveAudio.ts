@@ -249,6 +249,7 @@ ${recentHistoryText ? `RECENT CONVERSATION HISTORY:\n${recentHistoryText}` : ''}
 
     let wsUrl = '';
     let token = '';
+    let serverErrorMessage = '';
 
     // 1. Try to get short-lived ephemeral token from backend (minimal request, no profile/audio in body)
     try {
@@ -272,11 +273,11 @@ ${recentHistoryText ? `RECENT CONVERSATION HISTORY:\n${recentHistoryText}` : ''}
         }
       } else {
         const errData = await res.json().catch(() => ({}));
-        if (errData?.error) {
-          console.warn('Backend live-token error:', errData.error);
-        }
+        serverErrorMessage = errData?.error || `Server returned ${res.status}`;
+        console.warn('Backend live-token error:', serverErrorMessage);
       }
-    } catch (e) {
+    } catch (e: any) {
+      serverErrorMessage = e?.message || 'Failed to reach /api/live-token';
       console.warn('Backend live-token endpoint unavailable, checking fallback', e);
     }
 
@@ -287,8 +288,9 @@ ${recentHistoryText ? `RECENT CONVERSATION HISTORY:\n${recentHistoryText}` : ''}
     }
 
     if (!wsUrl) {
-      console.info('Direct WebSocket token not available; please ensure GEMINI_API_KEY is configured.');
-      optionsRef.current.onError?.('Gemini Live session requires an API key. Please check Settings or server environment.');
+      const displayError = serverErrorMessage || 'GEMINI_API_KEY is not configured on the production server.';
+      console.error('Gemini Live session auth error:', displayError);
+      optionsRef.current.onError?.(displayError);
       return;
     }
 

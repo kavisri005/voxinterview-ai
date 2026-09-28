@@ -240,7 +240,7 @@ export async function streamAnswerGeneration(
 export async function createLiveSessionToken(customApiKey?: string): Promise<{ token: string }> {
   const activeKey = customApiKey?.trim() || process.env.GEMINI_API_KEY?.trim() || '';
   if (!activeKey) {
-    throw new Error('GEMINI_API_KEY is not configured on the server');
+    throw new Error('GEMINI_API_KEY is not configured on the production server. Please add GEMINI_API_KEY to Vercel environment variables or enter it in Settings.');
   }
 
   const client = new GoogleGenAI({
