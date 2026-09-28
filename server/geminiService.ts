@@ -1,14 +1,29 @@
+import dotenv from 'dotenv';
+dotenv.config();
+
 import { GoogleGenAI } from '@google/genai';
 
-// Initialize the GoogleGenAI instance with the server-side API key
-const apiKey = process.env.GEMINI_API_KEY || '';
-
-export const ai = new GoogleGenAI({
-  apiKey: apiKey,
-  httpOptions: {
-    headers: {
-      'User-Agent': 'aistudio-build',
+/**
+ * Returns a GoogleGenAI client instance with the active API key.
+ */
+export function getGeminiClient(customApiKey?: string): GoogleGenAI {
+  const activeKey = customApiKey?.trim() || process.env.GEMINI_API_KEY || '';
+  return new GoogleGenAI({
+    apiKey: activeKey,
+    httpOptions: {
+      headers: {
+        'User-Agent': 'aistudio-build',
+      },
     },
+  });
+}
+
+// Default export for backward compatibility
+export const ai = new Proxy({} as GoogleGenAI, {
+  get(_target, prop) {
+    const client = getGeminiClient();
+    const value = (client as any)[prop];
+    return typeof value === 'function' ? value.bind(client) : value;
   },
 });
 
@@ -223,7 +238,7 @@ export async function streamAnswerGeneration(
  * Keeps permanent server API key secure and returns strictly the token.
  */
 export async function createLiveSessionToken(customApiKey?: string): Promise<{ token: string }> {
-  const activeKey = customApiKey?.trim() || process.env.GEMINI_API_KEY || apiKey;
+  const activeKey = customApiKey?.trim() || process.env.GEMINI_API_KEY?.trim() || '';
   if (!activeKey) {
     throw new Error('GEMINI_API_KEY is not configured on the server');
   }
@@ -243,8 +258,17 @@ export async function createLiveSessionToken(customApiKey?: string): Promise<{ t
     },
   });
 
+  const tokenString =
+    token?.name ||
+    (token as any)?.token ||
+    (typeof token === 'string' ? token : '');
+
+  if (!tokenString) {
+    throw new Error('Failed to obtain token from Gemini Live auth service');
+  }
+
   return {
-    token: token.name || '',
+    token: tokenString,
   };
 }
 

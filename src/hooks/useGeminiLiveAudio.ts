@@ -264,7 +264,16 @@ ${recentHistoryText ? `RECENT CONVERSATION HISTORY:\n${recentHistoryText}` : ''}
         const data = await res.json();
         if (data.token) {
           token = data.token;
-          wsUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained?access_token=${encodeURIComponent(token)}`;
+          const method = token.startsWith('auth_tokens/')
+            ? 'BidiGenerateContentConstrained'
+            : 'BidiGenerateContent';
+          const paramName = token.startsWith('auth_tokens/') ? 'access_token' : 'key';
+          wsUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.${method}?${paramName}=${encodeURIComponent(token)}`;
+        }
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        if (errData?.error) {
+          console.warn('Backend live-token error:', errData.error);
         }
       }
     } catch (e) {
