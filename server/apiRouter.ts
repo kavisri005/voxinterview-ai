@@ -4,6 +4,7 @@ import {
   streamAudioAnswerGeneration,
   createLiveSessionToken,
   classifyQuestion,
+  getGeminiClient,
 } from './geminiService.js';
 
 export const apiRouter = Router();
@@ -13,9 +14,24 @@ apiRouter.get('/health', (_req: Request, res: Response) => {
   res.json({
     status: 'ok',
     timestamp: Date.now(),
-    modelCascade: ['gemini-3.1-flash-lite', 'gemini-flash-latest', 'gemini-3.8-flash'],
+    modelCascade: ['gemini-3.8-flash', 'gemini-3.5-flash-lite'],
     hasApiKey: Boolean(process.env.GEMINI_API_KEY),
   });
+});
+
+// List available Gemini models for active key
+apiRouter.get('/list-models', async (_req: Request, res: Response) => {
+  try {
+    const client = getGeminiClient();
+    const list = await client.models.list();
+    const models: string[] = [];
+    for await (const m of list) {
+      models.push(m.name || (m as any).id);
+    }
+    res.json({ count: models.length, models });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || err });
+  }
 });
 
 // Analyze partial or complete question
