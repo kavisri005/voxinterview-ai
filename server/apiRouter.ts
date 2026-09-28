@@ -19,18 +19,27 @@ apiRouter.get('/health', (_req: Request, res: Response) => {
   });
 });
 
-// List available Gemini models for active key
-apiRouter.get('/list-models', async (_req: Request, res: Response) => {
+// Test generate endpoint for a specific model
+apiRouter.get('/test-generate', async (req: Request, res: Response) => {
+  const model = (req.query.model as string) || 'gemini-3.7-flash';
+  const start = Date.now();
   try {
     const client = getGeminiClient();
-    const list = await client.models.list();
-    const models: string[] = [];
-    for await (const m of list) {
-      models.push(m.name || (m as any).id);
-    }
-    res.json({ count: models.length, models });
+    const result = await client.models.generateContent({
+      model,
+      contents: 'Respond with the word SUCCESS in one word.',
+    });
+    res.json({
+      model,
+      timeMs: Date.now() - start,
+      text: result.text,
+    });
   } catch (err: any) {
-    res.status(500).json({ error: err?.message || err });
+    res.status(500).json({
+      model,
+      timeMs: Date.now() - start,
+      error: err?.message || err,
+    });
   }
 });
 
