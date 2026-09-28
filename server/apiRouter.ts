@@ -1,5 +1,10 @@
 import { Router, Request, Response } from 'express';
-import { streamAnswerGeneration, classifyQuestion } from './geminiService.js';
+import {
+  streamAnswerGeneration,
+  streamAudioAnswerGeneration,
+  createLiveSessionToken,
+  classifyQuestion,
+} from './geminiService.js';
 
 export const apiRouter = Router();
 
@@ -98,6 +103,77 @@ apiRouter.post('/answer', async (req: Request, res: Response) => {
     const errorMessage =
       error?.message ||
       'Failed to generate answer. Please check network connection and try again.';
+    res.write(`event: error\ndata: ${JSON.stringify({ message: errorMessage })}\n\n`);
+    (res as any).flush?.();
+    res.end();
+  }
+});
+
+// Create short-lived ephemeral token for Gemini Live API WebSocket access
+apiRouter.post('/live-token', async (_req: Request, res: Response) => {
+  try {
+    const session = await createLiveSessionToken();
+    res.json({
+      status: 'ok',
+      token: session.token,
+      endpoint: session.endpoint,
+    });
+  } catch (err: any) {
+    console.error('Error generating ephemeral token:', err);
+    res.status(500).json({
+      error: err?.message || 'Failed to create live session token',
+    });
+  }
+});
+
+// Stream answer directly from recorded audio bytes (SSE)
+apiRouter.post('/audio-answer', async (req: Request, res: Response) => {
+  const { audioBase64, mimeType, profile, candidateProfile, conversationHistory, style } =
+    req.body || {};
+
+  if (!audioBase64 || typeof audioBase64 !== 'string') {
+    return res.status(400).json({ error: 'Audio data is required' });
+  }
+
+  const activeProfile = candidateProfile || profile;
+
+  // Set up Server-Sent Events (SSE) headers
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  res.flushHeaders?.();
+
+  try {
+    const result = await streamAudioAnswerGeneration(
+      {
+        audioBase64,
+        mimeType: mimeType || 'audio/wav',
+        profile: activeProfile,
+        conversationHistory,
+        style,
+      },
+      (chunk) => {
+        res.write(`event: chunk\ndata: ${JSON.stringify({ chunk })}\n\n`);
+        (res as any).flush?.();
+      }
+    );
+
+    res.write(
+      `event: end\ndata: ${JSON.stringify({
+        fullAnswer: result.text,
+        question: result.question,
+        category: result.category,
+        intent: result.intent,
+      })}\n\n`
+    );
+    (res as any).flush?.();
+    res.end();
+  } catch (error: any) {
+    console.error('Gemini audio answer generation error:', error);
+    const errorMessage =
+      error?.message ||
+      'Failed to understand audio and generate answer. Please check network connection and try again.';
     res.write(`event: error\ndata: ${JSON.stringify({ message: errorMessage })}\n\n`);
     (res as any).flush?.();
     res.end();

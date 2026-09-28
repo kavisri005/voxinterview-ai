@@ -67,4 +67,5 @@ export interface InterviewSettings {
   autoAnswer: boolean;
   enableSpeechSynthesisPreview: boolean;
   minWordCountToTrigger: number;
+  customApiKey?: string;
 }

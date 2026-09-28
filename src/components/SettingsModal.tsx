@@ -165,6 +165,21 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           </div>
         </div>
 
+        {/* Optional Client API Key */}
+        <div className="pt-2 border-t border-slate-800 space-y-1.5">
+          <label className="text-xs font-semibold text-slate-300 flex items-center justify-between">
+            <span>Direct Gemini API Key (Optional)</span>
+            <span className="text-[10px] text-slate-500 font-normal">Leave blank to use server key</span>
+          </label>
+          <input
+            type="password"
+            value={settings.customApiKey || ''}
+            onChange={(e) => onUpdateSettings({ ...settings, customApiKey: e.target.value })}
+            placeholder="AIzaSy... (Optional private browser override)"
+            className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white placeholder:text-slate-600 focus:outline-none focus:border-indigo-500 font-mono"
+          />
+        </div>
+
         {/* Action Button */}
         <div className="pt-2 flex justify-end">
           <button

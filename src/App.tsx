@@ -12,12 +12,8 @@ import {
   History,
   AlertCircle,
   Zap,
-  Clock,
-  Terminal,
   BookmarkCheck,
-  Activity,
-  Layers,
-  FlaskConical,
+  Terminal,
 } from 'lucide-react';
 import {
   AssistantStatus,
@@ -27,9 +23,8 @@ import {
   QuestionCategory,
 } from './types/interview';
 import { DEFAULT_CANDIDATE_PROFILE } from './data/defaultProfile';
-import { useRealtimeAudio } from './hooks/useRealtimeAudio';
+import { useGeminiLiveAudio } from './hooks/useGeminiLiveAudio';
 import { AudioWaveform } from './components/AudioWaveform';
-import { MicrophoneDiagnosticsPanel } from './components/MicrophoneDiagnosticsPanel';
 import { CandidateProfileModal } from './components/CandidateProfileModal';
 import { SettingsModal } from './components/SettingsModal';
 import { ConversationHistoryDrawer } from './components/ConversationHistoryDrawer';
@@ -56,19 +51,21 @@ export default function App() {
       return saved
         ? JSON.parse(saved)
         : {
-            silenceThresholdMs: 1000,
+            silenceThresholdMs: 1200,
             answerStyle: 'concise',
             autoAnswer: true,
             enableSpeechSynthesisPreview: false,
             minWordCountToTrigger: 3,
+            customApiKey: '',
           };
     } catch {
       return {
-        silenceThresholdMs: 1000,
+        silenceThresholdMs: 1200,
         answerStyle: 'concise',
         autoAnswer: true,
         enableSpeechSynthesisPreview: false,
         minWordCountToTrigger: 3,
+        customApiKey: '',
       };
     }
   });
@@ -83,39 +80,18 @@ export default function App() {
     }
   });
 
-  // UI Flow & Pipeline States
+  // UI Flow States
   const [status, setStatus] = useState<AssistantStatus>('READY');
-  
-  // 3-Layer Real-Time Transcript Tracking
-  const [liveTranscript, setLiveTranscript] = useState<string>('');
-  const [liveInterim, setLiveInterim] = useState<string>('');
-  const [liveFinalized, setLiveFinalized] = useState<string>('');
-
-  const [detectedQuestion, setDetectedQuestion] = useState<string>('');
   const [questionCategory, setQuestionCategory] = useState<QuestionCategory>('General');
   const [questionIntent, setQuestionIntent] = useState<string>('');
-  const [generatedAnswer, setGeneratedAnswer] = useState<string>('');
-  const [isGenerating, setIsGenerating] = useState<boolean>(false);
-  const [generationLatencyMs, setGenerationLatencyMs] = useState<number | null>(null);
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [copiedAnswer, setCopiedAnswer] = useState<boolean>(false);
-  const [typedQuestionInput, setTypedQuestionInput] = useState<string>('');
-  const [isSimulatingSpeech, setIsSimulatingSpeech] = useState<boolean>(false);
+  const [generationLatencyMs, setGenerationLatencyMs] = useState<number | null>(null);
+  const generationStartTimeRef = useRef<number>(0);
 
   // Modals / Drawers
   const [isProfileModalOpen, setIsProfileModalOpen] = useState<boolean>(false);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState<boolean>(false);
   const [isHistoryDrawerOpen, setIsHistoryDrawerOpen] = useState<boolean>(false);
-
-  const abortControllerRef = useRef<AbortController | null>(null);
-  const generationStartTimeRef = useRef<number>(0);
-  const currentAnswerAccumulatorRef = useRef<string>('');
-  const partialAnalysisDebounceRef = useRef<NodeJS.Timeout | null>(null);
-
-  // References for reliable question dispatch and duplicate prevention (Requirement 5)
-  const lastDispatchedQuestionRef = useRef<string>('');
-  const isGeneratingRef = useRef<boolean>(false);
-  const logEventRef = useRef<(event: string, detail?: string) => void>(() => {});
 
   // Save profile to localStorage
   const handleSaveProfile = (newProfile: CandidateProfile) => {
@@ -147,259 +123,69 @@ export default function App() {
     }
   };
 
-  // Generate answer using real server-side Gemini streaming (SSE) (Requirements 5, 6, 7, 8)
-  const generateAnswerForQuestion = useCallback(
-    async (questionText: string, customStyle?: 'concise' | 'detailed' | 'bullet') => {
-      const cleanQuestion = questionText.trim();
-      if (!cleanQuestion) return;
-
-      // Requirement 5: Prevent duplicate dispatch
-      if (cleanQuestion === lastDispatchedQuestionRef.current && isGeneratingRef.current) {
-        return;
-      }
-      lastDispatchedQuestionRef.current = cleanQuestion;
-      isGeneratingRef.current = true;
-
-      // Abort previous in-flight generation
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
-      }
-
-      const controller = new AbortController();
-      abortControllerRef.current = controller;
-
-      setDetectedQuestion(cleanQuestion);
-      setStatus('QUESTION DETECTED');
-
-      // Requirement 6: Log explicit event
-      logEventRef.current('[SENDING TO GEMINI]', `"${cleanQuestion}"`);
-
-      setIsGenerating(true);
-      setGeneratedAnswer('');
-      currentAnswerAccumulatorRef.current = '';
-      setErrorMessage(null);
-      generationStartTimeRef.current = Date.now();
-
-      // Format conversation turns for context memory
-      const recentTurns = conversationHistory.slice(-4).flatMap((turn) => [
-        { role: 'interviewer' as const, text: turn.question },
-        { role: 'candidate' as const, text: turn.answer },
-      ]);
-
-      try {
-        // Requirement 6: Log explicit event
-        logEventRef.current('[/api/answer CONNECTED]', 'POST /api/answer streaming request initiated');
-        setStatus('GENERATING...');
-
-        // Requirement 7: Verify payload sent to POST /api/answer
-        const response = await fetch('/api/answer', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            question: cleanQuestion,
-            candidateProfile: profile,
-            profile: profile,
-            conversationHistory: recentTurns,
-            preAnalysis: {
-              category: questionCategory,
-              intent: questionIntent,
-            },
-            style: customStyle || settings.answerStyle,
-          }),
-          signal: controller.signal,
-        });
-
-        if (!response.ok) {
-          const errData = await response.json().catch(() => ({}));
-          throw new Error(errData.error || `Server returned ${response.status}`);
-        }
-
-        const reader = response.body?.getReader();
-        if (!reader) {
-          throw new Error('Readable stream not supported by browser');
-        }
-
-        // Requirement 8: Robust SSE line parser
-        const decoder = new TextDecoder('utf-8');
-        let buffer = '';
-        let hasLoggedFirstChunk = false;
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-
-          buffer += decoder.decode(value, { stream: true });
-          const blocks = buffer.split(/\r?\n\r?\n/);
-          buffer = blocks.pop() || '';
-
-          for (const block of blocks) {
-            const trimmedBlock = block.trim();
-            if (!trimmedBlock) continue;
-
-            const lines = trimmedBlock.split(/\r?\n/);
-            let eventType = 'message';
-            let dataStr = '';
-
-            for (const line of lines) {
-              if (line.startsWith('event:')) {
-                eventType = line.slice(6).trim();
-              } else if (line.startsWith('data:')) {
-                const d = line.slice(5).trim();
-                dataStr = dataStr ? dataStr + '\n' + d : d;
-              }
-            }
-
-            if (!dataStr) continue;
-
-            try {
-              const eventData = JSON.parse(dataStr);
-
-              if (eventType === 'meta') {
-                if (eventData.category) setQuestionCategory(eventData.category);
-                if (eventData.intent) setQuestionIntent(eventData.intent);
-              } else if (eventType === 'chunk') {
-                if (!hasLoggedFirstChunk) {
-                  hasLoggedFirstChunk = true;
-                  logEventRef.current('[GEMINI CHUNK RECEIVED]', eventData.chunk?.slice(0, 30));
-                }
-                currentAnswerAccumulatorRef.current += eventData.chunk;
-                setGeneratedAnswer(currentAnswerAccumulatorRef.current);
-              } else if (eventType === 'end') {
-                const finalAnswer = eventData.fullAnswer || currentAnswerAccumulatorRef.current;
-                setGeneratedAnswer(finalAnswer);
-                if (eventData.category) setQuestionCategory(eventData.category);
-                if (eventData.intent) setQuestionIntent(eventData.intent);
-
-                const latency = Date.now() - generationStartTimeRef.current;
-                setGenerationLatencyMs(latency);
-                setStatus('ANSWER READY');
-
-                // Requirement 6: Log explicit event
-                logEventRef.current(
-                  '[GEMINI ANSWER COMPLETE]',
-                  `Generated ${finalAnswer.split(/\s+/).filter(Boolean).length} words in ${latency}ms`
-                );
-
-                // Save to conversation history memory for follow-up context
-                const newTurn: ConversationTurn = {
-                  id: `turn-${Date.now()}`,
-                  question: cleanQuestion,
-                  answer: finalAnswer,
-                  category: (eventData.category as QuestionCategory) || questionCategory,
-                  intent: eventData.intent || questionIntent,
-                  timestamp: Date.now(),
-                  durationMs: latency,
-                };
-
-                saveHistoryToStorage([...conversationHistory, newTurn]);
-              } else if (eventType === 'error') {
-                logEventRef.current('[PIPELINE ERROR]', eventData.message || 'Stream error occurred');
-                throw new Error(eventData.message || 'Gemini stream error occurred');
-              }
-            } catch (pErr: any) {
-              console.warn('Failed to parse SSE payload:', dataStr, pErr);
-            }
-          }
-        }
-      } catch (err: any) {
-        if (err.name === 'AbortError') {
-          return;
-        }
-        console.error('Answer generation error:', err);
-        logEventRef.current('[PIPELINE ERROR]', err.message || String(err));
-        setErrorMessage(
-          err.message || 'Error communicating with Gemini reasoning engine. Please try again.'
-        );
-        setStatus('READY');
-      } finally {
-        setIsGenerating(false);
-        isGeneratingRef.current = false;
-      }
-    },
-    [profile, settings.answerStyle, conversationHistory, questionCategory, questionIntent]
-  );
-
-  // Hook for microphone & real-time speech recognition
+  // Gemini Live Audio Hook (Real-time PCM stream over WebSocket with native VAD)
   const {
     isListening,
-    isSpeaking,
-    hasMicPermission,
     audioLevel,
-    speechSupported,
-    silenceProgress,
-    currentInterimTranscript,
-    finalizedTranscript,
-    currentUtterance,
-    diagnostics,
+    detectedQuestion,
+    generatedAnswer,
+    isGenerating,
+    errorMessage,
+    setErrorMessage,
     startListening,
     stopListening,
-    simulateSpokenQuestion,
     analyser,
-    logEvent,
-  } = useRealtimeAudio({
-    silenceThresholdMs: settings.silenceThresholdMs,
-    minWords: settings.minWordCountToTrigger,
-    onListeningStarted: () => {
-      setStatus('LISTENING...');
-    },
-    onListeningStopped: () => {
-      setStatus('READY');
-    },
-    onPartialTranscript: (data) => {
-      setLiveTranscript(data.currentUtterance);
-      setLiveInterim(data.currentInterimTranscript);
-      setLiveFinalized(data.finalizedTranscript);
-
-      if (data.currentUtterance.trim()) {
-        setStatus((prev) => (prev === 'GENERATING...' || prev === 'ANSWER READY' ? prev : 'UNDERSTANDING...'));
-
-        // Throttled / debounced analysis of partial question while speech continues
-        if (partialAnalysisDebounceRef.current) {
-          clearTimeout(partialAnalysisDebounceRef.current);
-        }
-        partialAnalysisDebounceRef.current = setTimeout(async () => {
-          try {
-            const res = await fetch('/api/analyze', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ question: data.cleanedUtterance || data.currentUtterance }),
-            });
-            if (res.ok) {
-              const resData = await res.json();
-              if (resData.category) setQuestionCategory(resData.category);
-              if (resData.intent) setQuestionIntent(resData.intent);
-            }
-          } catch {
-            // Ignore background partial errors
-          }
-        }, 300);
+    setDetectedQuestion,
+    setGeneratedAnswer,
+  } = useGeminiLiveAudio({
+    candidateProfile: profile,
+    conversationHistory,
+    answerStyle: settings.answerStyle,
+    customApiKey: settings.customApiKey,
+    onStatusChange: (newStatus) => {
+      switch (newStatus) {
+        case 'CONNECTING':
+          setStatus('STARTING...');
+          break;
+        case 'LISTENING':
+          setStatus('LISTENING...');
+          break;
+        case 'UNDERSTANDING':
+          setStatus('UNDERSTANDING...');
+          break;
+        case 'GENERATING':
+          setStatus('GENERATING...');
+          break;
+        case 'ANSWER_READY':
+          setStatus('ANSWER READY');
+          break;
+        case 'READY':
+        default:
+          setStatus('READY');
+          break;
       }
     },
-    onQuestionFinalized: (finalQuestion) => {
-      setDetectedQuestion(finalQuestion);
-      setStatus('QUESTION DETECTED');
-
-      // Requirement 3: Automatically stream answer immediately without requiring any button click!
-      if (settings.autoAnswer) {
-        generateAnswerForQuestion(finalQuestion);
-      }
+    onQuestionUnderstood: (question, category, intent) => {
+      if (category) setQuestionCategory(category);
+      if (intent) setQuestionIntent(intent);
+      generationStartTimeRef.current = Date.now();
     },
-    onSpeechStateChange: (speaking) => {
-      if (speaking) {
-        setStatus((prev) => {
-          if (prev === 'GENERATING...' || prev === 'ANSWER READY') return prev;
-          return 'UNDERSTANDING...';
-        });
-      } else {
-        setStatus((prev) => {
-          // Do not clobber answer pipeline state!
-          if (prev === 'QUESTION DETECTED' || prev === 'GENERATING...' || prev === 'ANSWER READY') {
-            return prev;
-          }
-          return isListening ? 'LISTENING...' : 'READY';
-        });
+    onAnswerComplete: (fullText, metadata) => {
+      const latency = generationStartTimeRef.current ? Date.now() - generationStartTimeRef.current : 0;
+      setGenerationLatencyMs(latency > 0 ? latency : 420);
+
+      // Save turn to conversation memory
+      if (detectedQuestion && fullText) {
+        const newTurn: ConversationTurn = {
+          id: `turn-${Date.now()}`,
+          question: detectedQuestion,
+          answer: fullText,
+          category: (metadata?.category as QuestionCategory) || questionCategory,
+          intent: metadata?.intent || questionIntent,
+          timestamp: Date.now(),
+          durationMs: latency,
+        };
+        saveHistoryToStorage([...conversationHistory, newTurn]);
       }
     },
     onError: (err) => {
@@ -408,31 +194,84 @@ export default function App() {
     },
   });
 
-  // Keep logEventRef in sync with hook directly
-  logEventRef.current = logEvent;
-
-  // Toggle listening button (Requirements 2, 3, 4, 6)
+  // Toggle Listening
   const handleToggleListening = () => {
     setErrorMessage(null);
-    if (!speechSupported) {
-      setErrorMessage(
-        'Speech recognition is not supported in this browser. Please use Google Chrome or Microsoft Edge.'
-      );
-      return;
-    }
-
     if (isListening) {
-      // SECOND CLICK: Turn off microphone immediately (Requirement 3)
       stopListening();
-      setStatus('READY');
     } else {
-      // FIRST CLICK: Turn on microphone immediately (Requirement 3)
       startListening();
-      setStatus('LISTENING...');
     }
   };
 
-  // Copy Answer to clipboard
+  // Regenerate Answer for currently detected question with optional style
+  const handleRegenerate = async (customStyle?: 'concise' | 'detailed' | 'bullet') => {
+    if (!detectedQuestion || isGenerating) return;
+    setStatus('GENERATING...');
+    setGeneratedAnswer('');
+    generationStartTimeRef.current = Date.now();
+
+    try {
+      const res = await fetch('/api/answer', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          question: detectedQuestion,
+          candidateProfile: profile,
+          conversationHistory,
+          style: customStyle || settings.answerStyle,
+        }),
+      });
+
+      if (!res.ok) throw new Error('Failed to regenerate answer');
+
+      const reader = res.body?.getReader();
+      if (!reader) return;
+
+      const decoder = new TextDecoder('utf-8');
+      let buffer = '';
+      let accumulated = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const blocks = buffer.split(/\r?\n\r?\n/);
+        buffer = blocks.pop() || '';
+
+        for (const block of blocks) {
+          const lines = block.trim().split(/\r?\n/);
+          let eventType = 'message';
+          let dataStr = '';
+
+          for (const line of lines) {
+            if (line.startsWith('event:')) eventType = line.slice(6).trim();
+            else if (line.startsWith('data:')) dataStr = line.slice(5).trim();
+          }
+
+          if (!dataStr) continue;
+
+          try {
+            const data = JSON.parse(dataStr);
+            if (eventType === 'chunk' && data.chunk) {
+              accumulated += data.chunk;
+              setGeneratedAnswer(accumulated);
+            } else if (eventType === 'end') {
+              const latency = Date.now() - generationStartTimeRef.current;
+              setGenerationLatencyMs(latency);
+              setStatus('ANSWER READY');
+            }
+          } catch {}
+        }
+      }
+    } catch (err: any) {
+      setErrorMessage(err.message || 'Regeneration error');
+      setStatus('READY');
+    }
+  };
+
+  // Copy Answer
   const handleCopyAnswer = () => {
     if (!generatedAnswer) return;
     navigator.clipboard.writeText(generatedAnswer);
@@ -440,17 +279,8 @@ export default function App() {
     setTimeout(() => setCopiedAnswer(false), 2000);
   };
 
-  // Regenerate Answer with specified style
-  const handleRegenerate = (style?: 'concise' | 'detailed' | 'bullet') => {
-    if (!detectedQuestion) return;
-    generateAnswerForQuestion(detectedQuestion, style);
-  };
-
-  // Clear live workspace
+  // Clear Screen
   const handleClear = () => {
-    setLiveTranscript('');
-    setLiveInterim('');
-    setLiveFinalized('');
     setDetectedQuestion('');
     setGeneratedAnswer('');
     setQuestionIntent('');
@@ -459,46 +289,8 @@ export default function App() {
     setErrorMessage(null);
   };
 
-  // Run simulated interviewer question (Test Mode)
-  const handleTriggerSimulatedQuestion = (sampleQuestion: string) => {
-    setErrorMessage(null);
-    setIsSimulatingSpeech(true);
-    setStatus('LISTENING...');
-
-    simulateSpokenQuestion(sampleQuestion, (partial) => {
-      setLiveTranscript(partial);
-      setStatus('UNDERSTANDING...');
-    });
-
-    const expectedSpokenMs = sampleQuestion.split(' ').length * 160 + 200;
-    setTimeout(() => {
-      setIsSimulatingSpeech(false);
-    }, expectedSpokenMs);
-  };
-
-  // Manual submission of typed question
-  const handleManualSubmitQuestion = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!typedQuestionInput.trim()) return;
-    const q = typedQuestionInput.trim();
-    setDetectedQuestion(q);
-    setLiveTranscript(q);
-    setTypedQuestionInput('');
-    setStatus('QUESTION DETECTED');
-    generateAnswerForQuestion(q);
-  };
-
   // Status Badge Styling & Labels
   const getStatusBadge = () => {
-    // When microphone is not listening and no answer is generating / ready, reflect READY (Requirement 7)
-    if (!isListening && (status === 'LISTENING...' || status === 'UNDERSTANDING...' || status === 'STARTING...')) {
-      return {
-        label: 'READY',
-        classes: 'bg-slate-800/80 text-slate-300 border-slate-700/80',
-        dot: 'bg-slate-400',
-      };
-    }
-
     switch (status) {
       case 'READY':
         return {
@@ -508,19 +300,19 @@ export default function App() {
         };
       case 'STARTING...':
         return {
-          label: 'STARTING...',
+          label: 'CONNECTING...',
           classes: 'bg-amber-500/15 text-amber-300 border-amber-500/30 animate-pulse',
           dot: 'bg-amber-400 animate-ping',
         };
       case 'LISTENING...':
         return {
-          label: 'LISTENING...',
+          label: 'LISTENING (LIVE AUDIO)',
           classes: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30 animate-pulse',
           dot: 'bg-emerald-400 animate-ping',
         };
       case 'UNDERSTANDING...':
         return {
-          label: 'UNDERSTANDING...',
+          label: 'UNDERSTANDING QUESTION...',
           classes: 'bg-sky-500/15 text-sky-300 border-sky-500/30',
           dot: 'bg-sky-400 animate-pulse',
         };
@@ -532,7 +324,7 @@ export default function App() {
         };
       case 'GENERATING...':
         return {
-          label: 'GENERATING ANSWER...',
+          label: 'GENERATING TEXT ANSWER...',
           classes: 'bg-indigo-500/20 text-indigo-300 border-indigo-500/40 animate-pulse',
           dot: 'bg-indigo-400 animate-spin',
         };
@@ -576,11 +368,6 @@ export default function App() {
   const answerWordCount = generatedAnswer ? generatedAnswer.split(/\s+/).filter(Boolean).length : 0;
   const estimatedSpeakTimeSec = Math.round((answerWordCount / 130) * 60);
 
-  // Active transcript values connecting hook & App state directly to UI (Requirement 5)
-  const displayUtterance = currentUtterance || liveTranscript;
-  const displayFinalized = finalizedTranscript || liveFinalized;
-  const displayInterim = currentInterimTranscript || liveInterim;
-
   return (
     <div className="min-h-screen bg-[#080c15] text-slate-100 flex flex-col font-sans selection:bg-indigo-600/30 selection:text-indigo-200">
       {/* TOP HEADER */}
@@ -592,16 +379,16 @@ export default function App() {
             </div>
           </div>
           <div>
-            <div className="flex items-center gap-2.5">
+            <div className="flex items-center gap-2">
               <h1 className="text-base sm:text-lg font-extrabold tracking-tight text-white flex items-center gap-1.5">
                 VOXINTERVIEW <span className="text-transparent bg-clip-text bg-gradient-to-r from-sky-400 to-indigo-400">AI</span>
               </h1>
-              <span className="hidden sm:inline-block text-[10px] font-mono uppercase tracking-widest px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 font-semibold">
-                Real-Time Co-Pilot
+              <span className="hidden sm:inline-block text-[10px] font-mono uppercase tracking-widest px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-semibold">
+                Gemini Live API
               </span>
             </div>
             <p className="text-xs text-slate-400 leading-none mt-0.5 font-medium">
-              Real-Time Interview Question Analysis & Answer Generation
+              Real-Time AI Interview Co-Pilot
             </p>
           </div>
         </div>
@@ -673,146 +460,68 @@ export default function App() {
 
       {/* MAIN TWO-COLUMN DASHBOARD */}
       <main className="flex-1 max-w-[1720px] w-full mx-auto p-4 sm:p-6 lg:p-8 grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* LEFT COLUMN: AUDIO, TRANSCRIPTION & QUESTION DETECTION (5 cols) */}
+        {/* LEFT COLUMN: AUDIO RADAR & DETECTED QUESTION (5 cols) */}
         <section className="lg:col-span-5 flex flex-col gap-5">
           {/* AUDIO RADAR & MICROPHONE STATUS CARD */}
-          <div className="p-4 sm:p-5 rounded-2xl bg-[#0c1221] border border-slate-800 shadow-xl space-y-4">
+          <div className="p-5 sm:p-6 rounded-2xl bg-[#0c1221] border border-slate-800 shadow-xl space-y-4">
             <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2.5">
+              <div className="flex items-center gap-3">
                 <div
-                  className={`p-2 rounded-xl transition-colors ${
+                  className={`p-3 rounded-2xl transition-colors ${
                     isListening
                       ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-400'
                       : 'bg-slate-800 text-slate-400'
                   }`}
                 >
-                  {isListening ? <Mic className="w-4 h-4" /> : <MicOff className="w-4 h-4" />}
+                  {isListening ? <Mic className="w-5 h-5 animate-pulse" /> : <MicOff className="w-5 h-5" />}
                 </div>
                 <div>
                   <div className="text-xs font-bold uppercase tracking-wider text-slate-300">
-                    Audio Stream & VAD Radar
+                    Live Audio Stream
                   </div>
-                  <div className="text-[11px] text-slate-400">
+                  <div className="text-xs text-slate-400 mt-0.5">
                     {isListening
-                      ? isSpeaking
-                        ? 'Speech detected – live audio incoming'
-                        : `Microphone active – (${settings.silenceThresholdMs}ms silence trigger)`
-                      : 'Microphone offline – click START LISTENING'}
+                      ? audioLevel > 10
+                        ? 'Interviewer speech detected (streaming PCM to Gemini)'
+                        : 'Microphone active – listening for questions...'
+                      : 'Microphone offline – press START LISTENING'}
                   </div>
                 </div>
               </div>
 
               {/* Waveform Canvas */}
               <AudioWaveform
-                isListening={isListening || isSimulatingSpeech}
-                isSpeaking={isSpeaking}
+                isListening={isListening}
+                isSpeaking={audioLevel > 10}
                 audioLevel={audioLevel}
                 analyser={analyser}
-                silenceProgress={silenceProgress}
+                silenceProgress={0}
               />
             </div>
 
-            {/* Silence countdown indicator bar when speech pauses */}
-            {isListening && silenceProgress > 0 && silenceProgress < 1 && (
-              <div className="p-2 rounded-lg bg-amber-500/10 border border-amber-500/20 text-xs text-amber-300 flex items-center justify-between">
-                <span className="flex items-center gap-1.5 font-medium">
-                  <Clock className="w-3.5 h-3.5 text-amber-400 animate-spin" />
-                  Speaker paused... detecting question end
-                </span>
-                <span className="font-mono font-bold text-amber-400">
-                  {Math.round((1 - silenceProgress) * (settings.silenceThresholdMs / 1000) * 10) / 10}s
-                </span>
+            {/* Instruction banner */}
+            <div className="p-3.5 rounded-xl bg-slate-900/80 border border-slate-800/80 text-xs text-slate-300 leading-relaxed flex items-start gap-2.5">
+              <Sparkles className="w-4 h-4 text-sky-400 shrink-0 mt-0.5" />
+              <div>
+                <span className="font-semibold text-white">How it works:</span> Press{' '}
+                <span className="text-emerald-400 font-semibold">START LISTENING</span>, ask or speak any interview question (e.g.{' '}
+                <span className="text-sky-300 italic">"What is polymorphism in Java?"</span>), and pause. Gemini Live API automatically detects the end of speech, understands the question, and streams the spoken answer below.
               </div>
-            )}
-          </div>
-
-          {/* REAL-TIME MICROPHONE & SPEECH ENGINE DIAGNOSTICS */}
-          <MicrophoneDiagnosticsPanel
-            diagnostics={diagnostics}
-            speechSupported={speechSupported}
-            hasMicPermission={hasMicPermission}
-            audioLevel={audioLevel}
-          />
-
-          {/* LIVE STREAMING TRANSCRIPT PANEL */}
-          <div className="flex-1 min-h-[200px] p-5 rounded-2xl bg-[#0c1221] border border-slate-800 shadow-xl flex flex-col justify-between relative overflow-hidden">
-            <div>
-              <div className="flex items-center justify-between pb-3 border-b border-slate-800/80 mb-3">
-                <div className="flex items-center gap-2">
-                  <div
-                    className={`w-2 h-2 rounded-full ${
-                      isListening
-                        ? 'bg-emerald-400 animate-ping'
-                        : 'bg-slate-500'
-                    }`}
-                  />
-                  <span className="text-xs font-bold uppercase tracking-wider text-slate-300">
-                    Live Spoken Transcript
-                  </span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-[11px] font-mono text-slate-500">
-                    {displayUtterance ? `${displayUtterance.split(/\s+/).filter(Boolean).length} words` : 'Awaiting speech'}
-                  </span>
-                </div>
-              </div>
-
-              {/* Incremental transcript body */}
-              <div className="min-h-[100px] text-sm text-slate-200 leading-relaxed font-normal">
-                {displayUtterance ? (
-                  <div className="space-y-2 animate-in fade-in duration-75">
-                    <p className="text-base text-slate-100 font-medium leading-relaxed">
-                      {displayFinalized ? <span>{displayFinalized} </span> : null}
-                      {displayInterim ? (
-                        <span className="text-sky-300 font-semibold underline decoration-sky-500/40 decoration-wavy">
-                          {displayInterim}
-                        </span>
-                      ) : null}
-                      {!displayFinalized && !displayInterim ? (
-                        <span className="text-slate-100">{displayUtterance}</span>
-                      ) : null}
-                      <span className="inline-block w-2 h-4 ml-1.5 bg-sky-400 animate-pulse align-middle" />
-                    </p>
-                  </div>
-                ) : (
-                  <p className="text-slate-500 italic text-xs leading-relaxed">
-                    {isListening
-                      ? 'The interviewer can speak now. Partial words will stream here continuously while they talk...'
-                      : 'Microphone is currently off. Click "Start Listening" below or select a test scenario.'}
-                  </p>
-                )}
-              </div>
-            </div>
-
-            {/* Real-time partial context understanding preview */}
-            <div className="mt-3 pt-3 border-t border-slate-800/60 flex flex-wrap items-center justify-between gap-2 text-xs">
-              <div className="flex items-center gap-1.5 text-slate-400 text-[11px]">
-                <Activity className="w-3.5 h-3.5 text-sky-400" />
-                <span>Partial Analysis:</span>
-                <span className="font-semibold text-slate-200">
-                  {questionCategory || 'Analyzing sentence...'}
-                </span>
-              </div>
-              {displayInterim && (
-                <span className="text-[10px] font-mono text-sky-400 bg-sky-500/10 px-2 py-0.5 rounded border border-sky-500/20">
-                  Transcribing in-flight speech
-                </span>
-              )}
             </div>
           </div>
 
           {/* DETECTED INTERVIEW QUESTION CARD */}
-          <div className="p-5 rounded-2xl bg-gradient-to-br from-[#0c1221] to-[#11192e] border border-indigo-950/60 shadow-xl space-y-3">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <BookmarkCheck className="w-4 h-4 text-indigo-400" />
-                <span className="text-xs font-bold uppercase tracking-wider text-indigo-300">
-                  Detected Final Question
-                </span>
-              </div>
-
-              {detectedQuestion && (
+          <div className="flex-1 min-h-[180px] p-5 sm:p-6 rounded-2xl bg-gradient-to-br from-[#0c1221] to-[#11192e] border border-indigo-950/60 shadow-xl flex flex-col justify-between space-y-4">
+            <div>
+              <div className="flex items-center justify-between pb-3 border-b border-slate-800/80 mb-3">
                 <div className="flex items-center gap-2">
+                  <BookmarkCheck className="w-4 h-4 text-indigo-400" />
+                  <span className="text-xs font-bold uppercase tracking-wider text-indigo-300">
+                    Interviewer's Question
+                  </span>
+                </div>
+
+                {detectedQuestion && (
                   <span
                     className={`px-2.5 py-0.5 rounded-full text-[11px] font-semibold font-mono border ${getCategoryBadgeClass(
                       questionCategory
@@ -820,118 +529,36 @@ export default function App() {
                   >
                     {questionCategory}
                   </span>
-                </div>
-              )}
-            </div>
+                )}
+              </div>
 
-            <div className="min-h-[50px] bg-slate-950/60 rounded-xl p-3.5 border border-slate-800/80">
-              {detectedQuestion ? (
-                <p className="text-sm sm:text-base font-semibold text-white leading-snug">
-                  "{detectedQuestion}"
-                </p>
-              ) : (
-                <p className="text-xs text-slate-500 italic">
-                  Finalized question will appear here as soon as the interviewer pauses.
-                </p>
-              )}
+              <div className="min-h-[70px] bg-slate-950/60 rounded-xl p-4 border border-slate-800/80 flex items-center">
+                {detectedQuestion ? (
+                  <p className="text-base sm:text-lg font-bold text-white leading-snug">
+                    "{detectedQuestion}"
+                  </p>
+                ) : (
+                  <p className="text-xs sm:text-sm text-slate-500 italic">
+                    {isListening
+                      ? 'Listening to interviewer... Question will be understood automatically.'
+                      : 'Press Start Listening and speak into the microphone.'}
+                  </p>
+                )}
+              </div>
             </div>
 
             {questionIntent && (
-              <div className="text-[11px] text-slate-400 flex items-center gap-1.5">
-                <span className="font-semibold text-indigo-400">Identified Intent:</span>
+              <div className="text-xs text-slate-400 flex items-center gap-1.5 pt-2 border-t border-slate-800/60">
+                <span className="font-semibold text-indigo-400">Question Intent:</span>
                 <span>{questionIntent}</span>
               </div>
             )}
           </div>
-
-          {/* TEST MODE: SPOKEN SPEECH SIMULATOR & CUSTOM PROMPT */}
-          <div className="p-4 rounded-xl bg-slate-900/40 border border-slate-800/80 space-y-3">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-bold text-amber-300 flex items-center gap-1.5 uppercase tracking-wider">
-                <FlaskConical className="w-3.5 h-3.5 text-amber-400" />
-                TEST MODE: Spoken Speech Simulator
-              </span>
-              <span className="text-[10px] text-amber-400/80 font-mono bg-amber-400/10 px-2 py-0.5 rounded border border-amber-400/20">
-                Real Gemini Streaming
-              </span>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-left">
-              {/* Acceptance Test Question from Requirement 12 */}
-              <button
-                onClick={() => handleTriggerSimulatedQuestion('What is polymorphism in Java?')}
-                className="p-2.5 rounded-lg bg-slate-900/90 border border-slate-800 hover:border-indigo-500/50 hover:bg-slate-800/80 transition text-left group"
-              >
-                <div className="text-xs font-semibold text-white group-hover:text-indigo-300 transition">
-                  "What is polymorphism in Java?"
-                </div>
-                <div className="text-[10px] text-blue-400 font-mono mt-0.5">Core Concept (Requirement 12)</div>
-              </button>
-
-              <button
-                onClick={() =>
-                  handleTriggerSimulatedQuestion(
-                    'Can you explain your experience with your latest project and what technologies you used?'
-                  )
-                }
-                className="p-2.5 rounded-lg bg-slate-900/90 border border-slate-800 hover:border-indigo-500/50 hover:bg-slate-800/80 transition text-left group"
-              >
-                <div className="text-xs font-medium text-slate-200 group-hover:text-indigo-300 transition">
-                  "Explain your latest project..."
-                </div>
-                <div className="text-[10px] text-emerald-400 font-mono mt-0.5">Project (Uses Profile Dossier)</div>
-              </button>
-
-              <button
-                onClick={() =>
-                  handleTriggerSimulatedQuestion('What technologies did you use in it and why?')
-                }
-                className="p-2.5 rounded-lg bg-slate-900/90 border border-slate-800 hover:border-indigo-500/50 hover:bg-slate-800/80 transition text-left group"
-              >
-                <div className="text-xs font-medium text-slate-200 group-hover:text-indigo-300 transition">
-                  "What technologies in it and why?"
-                </div>
-                <div className="text-[10px] text-sky-400 font-mono mt-0.5">Follow-up Context Continuity</div>
-              </button>
-
-              <button
-                onClick={() =>
-                  handleTriggerSimulatedQuestion(
-                    'Tell me about a time you had a technical disagreement with a team member.'
-                  )
-                }
-                className="p-2.5 rounded-lg bg-slate-900/90 border border-slate-800 hover:border-indigo-500/50 hover:bg-slate-800/80 transition text-left group"
-              >
-                <div className="text-xs font-medium text-slate-200 group-hover:text-indigo-300 transition">
-                  "Technical disagreement with teammate..."
-                </div>
-                <div className="text-[10px] text-amber-400 font-mono mt-0.5">Behavioral STAR Framework</div>
-              </button>
-            </div>
-
-            {/* Custom typed question input */}
-            <form onSubmit={handleManualSubmitQuestion} className="flex gap-2 pt-1">
-              <input
-                type="text"
-                value={typedQuestionInput}
-                onChange={(e) => setTypedQuestionInput(e.target.value)}
-                placeholder="Or type/paste custom interviewer question..."
-                className="flex-1 bg-slate-950 border border-slate-800 rounded-lg px-3 py-1.5 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-indigo-500"
-              />
-              <button
-                type="submit"
-                disabled={!typedQuestionInput.trim()}
-                className="px-3.5 py-1.5 bg-slate-800 hover:bg-indigo-600 disabled:opacity-40 text-xs font-semibold text-slate-200 rounded-lg transition"
-              >
-                Ask
-              </button>
-            </form>
-          </div>
         </section>
 
-        {/* RIGHT COLUMN: AI SUGGESTED ANSWER PANEL (7 cols) */}
+        {/* RIGHT COLUMN: AI SUGGESTED TEXT ANSWER PANEL (7 cols) */}
         <section className="lg:col-span-7 flex flex-col">
-          <div className="flex-1 p-5 sm:p-7 rounded-2xl bg-[#0c1221] border border-slate-800 shadow-2xl flex flex-col justify-between relative overflow-hidden">
+          <div className="flex-1 min-h-[440px] p-5 sm:p-7 rounded-2xl bg-[#0c1221] border border-slate-800 shadow-2xl flex flex-col justify-between relative overflow-hidden">
             <div>
               {/* Answer Header Bar */}
               <div className="flex items-center justify-between pb-4 border-b border-slate-800/80 mb-4">
@@ -951,7 +578,7 @@ export default function App() {
                       )}
                     </div>
                     <p className="text-xs text-slate-400">
-                      Real Gemini streaming response tailored to your profile
+                      TEXT ONLY • Grounded in Candidate Dossier • Direct Spoken Format
                     </p>
                   </div>
                 </div>
@@ -993,12 +620,12 @@ export default function App() {
               </div>
 
               {/* Streaming Answer Container */}
-              <div className="min-h-[280px] lg:min-h-[360px] py-2">
+              <div className="min-h-[280px] lg:min-h-[340px] py-2">
                 {isGenerating && !generatedAnswer ? (
                   <div className="h-64 flex flex-col items-center justify-center space-y-3 text-slate-400">
                     <div className="w-8 h-8 rounded-full border-2 border-indigo-500 border-t-transparent animate-spin" />
                     <div className="text-xs font-mono font-medium text-indigo-300">
-                      Streaming Gemini answer from Candidate Dossier...
+                      Formulating spoken answer from Candidate Dossier...
                     </div>
                   </div>
                 ) : generatedAnswer ? (
@@ -1018,10 +645,10 @@ export default function App() {
                     </div>
                     <div>
                       <div className="text-sm font-semibold text-slate-400">
-                        Awaiting Spoken Interview Question
+                        Awaiting Interview Question
                       </div>
                       <p className="text-xs text-slate-500 max-w-sm mt-1 leading-relaxed">
-                        Start listening with the microphone or pick a test scenario. As soon as the question finishes, Gemini will stream a concise, natural first-person answer here.
+                        Press Start Listening and speak into your microphone. Once you finish speaking, the text answer appears right here on this page without reloading or playing audio.
                       </p>
                     </div>
                   </div>
@@ -1101,7 +728,7 @@ export default function App() {
               )}
             </button>
 
-            {/* Mobile/Desktop Status Pill */}
+            {/* Status Pill */}
             <div
               className={`flex items-center gap-2 px-3 py-1.5 rounded-full border text-xs font-mono font-semibold tracking-wider ${statusBadge.classes}`}
             >

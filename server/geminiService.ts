@@ -211,3 +211,135 @@ export async function streamAnswerGeneration(
 
   throw lastError || new Error('Failed to generate answer from candidate models.');
 }
+
+/**
+ * Creates a short-lived ephemeral token for client-side Gemini Live API WebSocket access.
+ * Keeps permanent server API key secure.
+ */
+export async function createLiveSessionToken(): Promise<{ token: string; endpoint: string }> {
+  if (!apiKey) {
+    throw new Error('GEMINI_API_KEY is not configured on the server');
+  }
+
+  const client = new GoogleGenAI({
+    apiKey: apiKey,
+    httpOptions: { apiVersion: 'v1alpha' },
+  });
+
+  const expireTime = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+  const token = await client.authTokens.create({
+    config: {
+      uses: 1,
+      expireTime: expireTime,
+      newSessionExpireTime: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+      httpOptions: { apiVersion: 'v1alpha' },
+    },
+  });
+
+  return {
+    token: token.name || '',
+    endpoint:
+      'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained',
+  };
+}
+
+export interface GenerateAudioAnswerOptions {
+  audioBase64: string;
+  mimeType?: string;
+  profile?: CandidateProfile;
+  conversationHistory?: ConversationMessage[];
+  style?: 'concise' | 'detailed' | 'bullet';
+}
+
+/**
+ * Transcribes spoken audio and streams answer generation directly from audio bytes.
+ */
+export async function streamAudioAnswerGeneration(
+  options: GenerateAudioAnswerOptions,
+  onChunk: (chunk: string) => void
+): Promise<{ text: string; question: string; category: string; intent: string }> {
+  const { audioBase64, mimeType = 'audio/wav', profile, style = 'concise' } = options;
+  const systemInstruction = buildSystemInstruction(profile);
+
+  const styleGuide =
+    style === 'detailed'
+      ? 'Provide a comprehensive 4-5 sentence technical answer.'
+      : style === 'bullet'
+      ? 'Provide a concise opening sentence followed by 2-3 high-impact bullet points.'
+      : 'Keep the spoken answer concise and natural in 2-3 sentences.';
+
+  const promptText = `Listen carefully to the audio of the interviewer asking a question.
+Required output format:
+1. On the first line, output the interviewer's exact transcribed question prefixed with "QUESTION: ".
+2. On subsequent lines, give the candidate's natural first-person spoken answer ("I", "in my experience...", "on my project...").
+${styleGuide}
+Ground truth: Adhere strictly to the candidate dossier. Never invent experiences or skills.`;
+
+  const contents: any = [
+    {
+      role: 'user',
+      parts: [
+        {
+          inlineData: {
+            mimeType: mimeType,
+            data: audioBase64,
+          },
+        },
+        {
+          text: promptText,
+        },
+      ],
+    },
+  ];
+
+  const candidateModels = ['gemini-2.0-flash', 'gemini-2.5-flash', 'gemini-1.5-flash'];
+  let lastError: any = null;
+
+  for (const modelName of candidateModels) {
+    try {
+      const responseStream = await ai.models.generateContentStream({
+        model: modelName,
+        contents: contents,
+        config: {
+          systemInstruction: systemInstruction,
+          temperature: 0.5,
+          topP: 0.9,
+        },
+      });
+
+      let fullText = '';
+      for await (const chunk of responseStream) {
+        const text = chunk.text || '';
+        if (text) {
+          fullText += text;
+          onChunk(text);
+        }
+      }
+
+      if (fullText.trim()) {
+        let question = '';
+        let answer = fullText.trim();
+        const questionMatch = fullText.match(/^QUESTION:\s*([^\n\r]+)/i);
+        if (questionMatch) {
+          question = questionMatch[1].trim();
+          answer = fullText.replace(/^QUESTION:\s*[^\n\r]+[\r\n]*/i, '').trim();
+        }
+        const classification = classifyQuestion(question || fullText);
+
+        return {
+          text: answer,
+          question: question,
+          category: classification.category,
+          intent: classification.intent,
+        };
+      }
+    } catch (err: any) {
+      console.warn(`Model ${modelName} audio stream attempt error:`, err?.message || err);
+      lastError = err;
+      continue;
+    }
+  }
+
+  throw lastError || new Error('Failed to generate answer from audio.');
+}
+
