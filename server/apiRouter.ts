@@ -23,11 +23,17 @@ apiRouter.get('/health', (_req: Request, res: Response) => {
 apiRouter.get('/test-generate', async (req: Request, res: Response) => {
   const model = (req.query.model as string) || 'gemini-3.7-flash';
   const start = Date.now();
+  const budgetParam = req.query.budget;
   try {
     const client = getGeminiClient();
+    const config: any = {};
+    if (budgetParam !== undefined) {
+      config.thinkingConfig = { thinkingBudget: Number(budgetParam) };
+    }
     const result = await client.models.generateContent({
       model,
       contents: 'Respond with the word SUCCESS in one word.',
+      config,
     });
     res.json({
       model,

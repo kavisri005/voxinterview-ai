@@ -230,7 +230,10 @@ export async function streamAnswerGeneration(
         systemInstruction: systemInstruction,
         temperature: 0.4,
         topP: 0.9,
-        maxOutputTokens: 380,
+        maxOutputTokens: 600,
+        thinkingConfig: {
+          thinkingBudget: 0,
+        },
       };
 
       const responseStream = await activeAi.models.generateContentStream({
@@ -372,6 +375,10 @@ Ground truth: Adhere strictly to the candidate dossier. Never invent experiences
           systemInstruction: systemInstruction,
           temperature: 0.5,
           topP: 0.9,
+          maxOutputTokens: 600,
+          thinkingConfig: {
+            thinkingBudget: 0,
+          },
         },
       });
 
