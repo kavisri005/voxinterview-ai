@@ -24,6 +24,8 @@ export const ai = new Proxy({} as GoogleGenAI, {
 
 export interface CandidateProfile {
   name: string;
+  email?: string;
+  phone?: string;
   degree: string;
   college: string;
   gradYear?: string;
@@ -32,8 +34,10 @@ export interface CandidateProfile {
   technicalSkills: string[];
   programmingLanguages: string[];
   frameworks: string[];
+  testingAutomationSkills?: string[];
   toolsDatabases: string[];
   projects: Array<{
+    id?: string;
     title: string;
     role?: string;
     techStack: string;
@@ -41,12 +45,21 @@ export interface CandidateProfile {
     highlights?: string;
   }>;
   experience: Array<{
+    id?: string;
+    role: string;
+    company: string;
+    period: string;
+    description: string;
+  }>;
+  internships?: Array<{
+    id?: string;
     role: string;
     company: string;
     period: string;
     description: string;
   }>;
   certifications: string[];
+  achievements?: string[];
   otherInfo?: string;
 }
 
@@ -71,36 +84,50 @@ export interface GenerateAnswerOptions {
 function buildSystemInstruction(profile?: CandidateProfile): string {
   let profileSection = 'No candidate profile specified. Answer general/technical questions with deep expertise, and role questions with articulate competence.';
 
-  if (profile && (profile.name || profile.technicalSkills?.length || profile.projects?.length)) {
-    const role = profile.targetRole || 'Software Engineer';
-    const skills = [
-      ...(profile.technicalSkills || []),
-      ...(profile.programmingLanguages || []),
-      ...(profile.frameworks || []),
-      ...(profile.toolsDatabases || []),
-    ].filter(Boolean).slice(0, 12).join(', ');
+  if (profile && (profile.name || profile.technicalSkills?.length || profile.projects?.length || profile.experience?.length || profile.testingAutomationSkills?.length)) {
+    const role = profile.targetRole || 'Software Professional';
+    
+    const techSkills = (profile.technicalSkills || []).join(', ');
+    const languages = (profile.programmingLanguages || []).join(', ');
+    const frameworks = (profile.frameworks || []).join(', ');
+    const testingSkills = (profile.testingAutomationSkills || []).join(', ');
+    const tools = (profile.toolsDatabases || []).join(', ');
 
     const projects = (profile.projects || [])
-      .slice(0, 3)
       .map(
         (p) =>
-          `"${p.title}" (${p.techStack}): ${p.description}${p.highlights ? ` [Key Highlights: ${p.highlights}]` : ''}`
+          `"${p.title}" (${p.techStack}): ${p.description}${p.highlights ? ` [Highlights: ${p.highlights}]` : ''}`
       )
       .join('; ');
 
     const experience = (profile.experience || [])
-      .slice(0, 2)
       .map((e) => `${e.role} at ${e.company} (${e.period}): ${e.description}`)
       .join('; ');
 
+    const internships = (profile.internships || [])
+      .map((i) => `${i.role} at ${i.company} (${i.period}): ${i.description}`)
+      .join('; ');
+
+    const certs = (profile.certifications || []).filter(Boolean).join(', ');
+    const achievements = (profile.achievements || []).filter(Boolean).join('; ');
+
     profileSection = `CANDIDATE DOSSIER (Ground Truth):
 - Name: ${profile.name || 'Candidate'}
-- Target Role: ${role}
-- Core Skills: ${skills}
+- Target Role / Title: ${role}
+- Contact: ${[profile.email ? `Email: ${profile.email}` : '', profile.phone ? `Phone: ${profile.phone}` : ''].filter(Boolean).join(' | ') || 'N/A'}
+- Professional Summary: ${profile.summary || 'N/A'}
+- Education: ${profile.degree || ''} ${profile.college ? `at ${profile.college}` : ''} ${profile.gradYear ? `(${profile.gradYear})` : ''}
+- Core Technical Skills: ${techSkills || 'N/A'}
+- Programming Languages: ${languages || 'N/A'}
+- Frameworks & Libraries: ${frameworks || 'N/A'}
+- Testing & Automation Skills: ${testingSkills || 'N/A'}
+- Tools & Databases: ${tools || 'N/A'}
+- Work Experience: ${experience || 'N/A'}
+- Internships: ${internships || 'N/A'}
 - Projects: ${projects || 'N/A'}
-- Experience: ${experience || 'N/A'}
-- Education: ${profile.degree || ''} ${profile.college ? `at ${profile.college}` : ''}
-- Summary: ${profile.summary || 'N/A'}`;
+- Certifications: ${certs || 'N/A'}
+- Achievements: ${achievements || 'N/A'}
+${profile.otherInfo ? `- Additional Info: ${profile.otherInfo}` : ''}`;
   }
 
   return `You are VoxInterview AI, a state-of-the-art, general-purpose interview question answering agent and live co-pilot. You combine the broad, accurate reasoning of a top-tier conversational AI with personalized grounded responses.
@@ -417,4 +444,211 @@ Ground truth: Adhere strictly to the candidate dossier. Never invent experiences
 
   throw lastError || new Error('Failed to generate answer from audio.');
 }
+
+export interface ExtractResumeOptions {
+  fileBase64: string;
+  fileName: string;
+  mimeType: string;
+  customApiKey?: string;
+}
+
+/**
+ * Extracts candidate profile information from a resume file (PDF or DOCX).
+ * Uses local document parsing (pdf-parse / mammoth) with Gemini structured extraction.
+ */
+export async function extractResumeProfile(
+  options: ExtractResumeOptions
+): Promise<CandidateProfile> {
+  const { fileBase64, fileName, mimeType, customApiKey } = options;
+  const activeKey = customApiKey?.trim() || process.env.GEMINI_API_KEY?.trim() || '';
+  if (!activeKey) {
+    throw new Error('GEMINI_API_KEY is not configured on the server. Please add GEMINI_API_KEY to environment variables or Settings.');
+  }
+
+  const fileBuffer = Buffer.from(fileBase64, 'base64');
+  let extractedRawText = '';
+  const lowerName = (fileName || '').toLowerCase();
+
+  if (lowerName.endsWith('.docx') || mimeType === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
+    try {
+      const mammoth = await import('mammoth');
+      const result = await mammoth.extractRawText({ buffer: fileBuffer });
+      extractedRawText = result.value || '';
+    } catch (e: any) {
+      console.warn('DOCX extraction warning:', e?.message || e);
+    }
+  } else if (lowerName.endsWith('.pdf') || mimeType === 'application/pdf') {
+    try {
+      const { PDFParse } = await import('pdf-parse');
+      const parser = new PDFParse({ data: fileBuffer });
+      await parser.load();
+      const res = await parser.getText();
+      extractedRawText = res?.text || '';
+    } catch (e: any) {
+      console.warn('PDFParse extraction warning:', e?.message || e);
+    }
+  } else {
+    try {
+      extractedRawText = fileBuffer.toString('utf-8');
+    } catch {}
+  }
+
+  const prompt = `You are an expert resume parsing engine and ATS. Analyze the resume content below with absolute fidelity.
+CRITICAL RULES:
+- Preserve the exact information from the resume.
+- Do NOT invent skills.
+- Do NOT invent experience.
+- Do NOT invent projects.
+- Do NOT invent certifications.
+- If information is missing or not mentioned in the resume, leave the field empty ("" or []).
+
+Extract and categorize into this exact JSON schema:
+{
+  "name": string (Full Name),
+  "email": string (Email address),
+  "phone": string (Phone number),
+  "targetRole": string (Current title or inferred role from experience),
+  "degree": string (Degree / Education),
+  "college": string (University / College name),
+  "gradYear": string (Graduation year if mentioned),
+  "summary": string (Professional summary from resume or brief objective),
+  "technicalSkills": string[] (Core technical, architecture, or domain skills),
+  "programmingLanguages": string[] (e.g. Java, Python, TypeScript, C++, etc.),
+  "frameworks": string[] (e.g. React, Spring Boot, Node.js, Express, etc.),
+  "testingAutomationSkills": string[] (e.g. Selenium, Cypress, Playwright, Automation Testing, JUnit, TestNG, Postman, etc.),
+  "toolsDatabases": string[] (e.g. PostgreSQL, Redis, Docker, Git, Jira, Jenkins, etc.),
+  "experience": [
+    {
+      "id": string (unique ID e.g. "exp-1"),
+      "role": string,
+      "company": string,
+      "period": string,
+      "description": string
+    }
+  ],
+  "internships": [
+    {
+      "id": string (unique ID e.g. "int-1"),
+      "role": string,
+      "company": string,
+      "period": string,
+      "description": string
+    }
+  ],
+  "projects": [
+    {
+      "id": string (unique ID e.g. "proj-1"),
+      "title": string,
+      "role": string,
+      "techStack": string,
+      "description": string,
+      "highlights": string
+    }
+  ],
+  "certifications": string[],
+  "achievements": string[],
+  "otherInfo": string
+}
+
+Respond with ONLY valid JSON.`;
+
+  const activeAi = new GoogleGenAI({ apiKey: activeKey });
+  
+  let contents: any[];
+  // If we couldn't extract text and it's a PDF, pass PDF as multimodal inlineData
+  if (!extractedRawText.trim() && (lowerName.endsWith('.pdf') || mimeType === 'application/pdf')) {
+    contents = [
+      {
+        role: 'user',
+        parts: [
+          {
+            inlineData: {
+              mimeType: 'application/pdf',
+              data: fileBase64,
+            },
+          },
+          { text: prompt },
+        ],
+      },
+    ];
+  } else {
+    contents = [
+      {
+        role: 'user',
+        parts: [
+          {
+            text: `${prompt}\n\n=== RESUME CONTENT ===\n${extractedRawText.trim() || 'No text extracted.'}`,
+          },
+        ],
+      },
+    ];
+  }
+
+  const response = await activeAi.models.generateContent({
+    model: 'gemini-3.6-flash',
+    contents: contents,
+    config: {
+      temperature: 0.1,
+      responseMimeType: 'application/json',
+      thinkingConfig: {
+        thinkingBudget: 0,
+      },
+    },
+  });
+
+  const responseText = response.text || '{}';
+  let parsed: any = {};
+  try {
+    parsed = JSON.parse(responseText);
+  } catch {
+    const jsonMatch = responseText.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      parsed = JSON.parse(jsonMatch[0]);
+    }
+  }
+
+  const profile: CandidateProfile = {
+    name: typeof parsed.name === 'string' ? parsed.name.trim() : '',
+    email: typeof parsed.email === 'string' ? parsed.email.trim() : '',
+    phone: typeof parsed.phone === 'string' ? parsed.phone.trim() : '',
+    targetRole: typeof parsed.targetRole === 'string' ? parsed.targetRole.trim() : '',
+    degree: typeof parsed.degree === 'string' ? parsed.degree.trim() : '',
+    college: typeof parsed.college === 'string' ? parsed.college.trim() : '',
+    gradYear: typeof parsed.gradYear === 'string' ? parsed.gradYear.trim() : '',
+    summary: typeof parsed.summary === 'string' ? parsed.summary.trim() : '',
+    technicalSkills: Array.isArray(parsed.technicalSkills) ? parsed.technicalSkills.map((s: any) => String(s).trim()).filter(Boolean) : [],
+    programmingLanguages: Array.isArray(parsed.programmingLanguages) ? parsed.programmingLanguages.map((s: any) => String(s).trim()).filter(Boolean) : [],
+    frameworks: Array.isArray(parsed.frameworks) ? parsed.frameworks.map((s: any) => String(s).trim()).filter(Boolean) : [],
+    testingAutomationSkills: Array.isArray(parsed.testingAutomationSkills) ? parsed.testingAutomationSkills.map((s: any) => String(s).trim()).filter(Boolean) : [],
+    toolsDatabases: Array.isArray(parsed.toolsDatabases) ? parsed.toolsDatabases.map((s: any) => String(s).trim()).filter(Boolean) : [],
+    projects: Array.isArray(parsed.projects) ? parsed.projects.map((p: any, idx: number) => ({
+      id: p.id || `proj-${idx + 1}`,
+      title: p.title || `Project ${idx + 1}`,
+      role: p.role || '',
+      techStack: p.techStack || '',
+      description: p.description || '',
+      highlights: p.highlights || '',
+    })) : [],
+    experience: Array.isArray(parsed.experience) ? parsed.experience.map((e: any, idx: number) => ({
+      id: e.id || `exp-${idx + 1}`,
+      role: e.role || '',
+      company: e.company || '',
+      period: e.period || '',
+      description: e.description || '',
+    })) : [],
+    internships: Array.isArray(parsed.internships) ? parsed.internships.map((i: any, idx: number) => ({
+      id: i.id || `int-${idx + 1}`,
+      role: i.role || '',
+      company: i.company || '',
+      period: i.period || '',
+      description: i.description || '',
+    })) : [],
+    certifications: Array.isArray(parsed.certifications) ? parsed.certifications.map((c: any) => String(c).trim()).filter(Boolean) : [],
+    achievements: Array.isArray(parsed.achievements) ? parsed.achievements.map((a: any) => String(a).trim()).filter(Boolean) : [],
+    otherInfo: typeof parsed.otherInfo === 'string' ? parsed.otherInfo.trim() : '',
+  };
+
+  return profile;
+}
+
 

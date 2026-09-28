@@ -5,6 +5,7 @@ import {
   createLiveSessionToken,
   classifyQuestion,
   getGeminiClient,
+  extractResumeProfile,
 } from './geminiService.js';
 
 export const apiRouter = Router();
@@ -219,5 +220,38 @@ apiRouter.post('/audio-answer', async (req: Request, res: Response) => {
     res.write(`event: error\ndata: ${JSON.stringify({ message: errorMessage })}\n\n`);
     (res as any).flush?.();
     res.end();
+  }
+});
+
+// Extract structured candidate profile from uploaded resume (PDF or DOCX)
+apiRouter.post('/extract-resume', async (req: Request, res: Response) => {
+  const { fileBase64, fileName, mimeType, customApiKey } = req.body || {};
+  const clientKey =
+    customApiKey ||
+    (req.headers['x-gemini-key'] as string) ||
+    (req.headers['authorization'] ? (req.headers['authorization'] as string).replace(/^Bearer\s+/i, '') : '') ||
+    (typeof req.query.key === 'string' ? req.query.key : '');
+
+  if (!fileBase64 || typeof fileBase64 !== 'string') {
+    return res.status(400).json({ error: 'Valid resume file content (base64) is required.' });
+  }
+
+  try {
+    const profile = await extractResumeProfile({
+      fileBase64,
+      fileName: fileName || 'resume.pdf',
+      mimeType: mimeType || 'application/pdf',
+      customApiKey: clientKey,
+    });
+
+    res.json({
+      success: true,
+      profile,
+    });
+  } catch (err: any) {
+    console.error('Resume extraction error:', err);
+    res.status(500).json({
+      error: err?.message || 'Failed to extract candidate profile from resume',
+    });
   }
 });

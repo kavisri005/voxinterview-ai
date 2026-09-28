@@ -106,26 +106,42 @@ ${dossier}`;
 
     // Send rich candidate information grounded in dossier
     const profile = optionsRef.current.candidateProfile;
-    const minimalProfile = profile ? {
+    const activeProfile = profile ? {
       name: profile.name || 'Candidate',
-      targetRole: profile.targetRole || 'Software Engineer',
-      technicalSkills: (profile.technicalSkills || []).slice(0, 10),
-      programmingLanguages: (profile.programmingLanguages || []).slice(0, 6),
-      frameworks: (profile.frameworks || []).slice(0, 6),
-      toolsDatabases: (profile.toolsDatabases || []).slice(0, 6),
-      projects: (profile.projects || []).slice(0, 3).map((p) => ({
+      targetRole: profile.targetRole || 'Software Professional',
+      email: profile.email || '',
+      phone: profile.phone || '',
+      degree: profile.degree || '',
+      college: profile.college || '',
+      gradYear: profile.gradYear || '',
+      summary: profile.summary || '',
+      technicalSkills: profile.technicalSkills || [],
+      programmingLanguages: profile.programmingLanguages || [],
+      frameworks: profile.frameworks || [],
+      testingAutomationSkills: profile.testingAutomationSkills || [],
+      toolsDatabases: profile.toolsDatabases || [],
+      projects: (profile.projects || []).map((p) => ({
         title: p.title,
+        role: p.role || '',
         techStack: p.techStack,
-        description: p.description ? p.description.slice(0, 120) : '',
-        highlights: p.highlights ? p.highlights.slice(0, 100) : '',
+        description: p.description || '',
+        highlights: p.highlights || '',
       })),
-      experience: (profile.experience || []).slice(0, 2).map((e) => ({
+      experience: (profile.experience || []).map((e) => ({
         role: e.role,
         company: e.company,
         period: e.period,
-        description: e.description ? e.description.slice(0, 100) : '',
+        description: e.description || '',
       })),
-      summary: profile.summary ? profile.summary.slice(0, 150) : '',
+      internships: (profile.internships || []).map((i) => ({
+        role: i.role,
+        company: i.company,
+        period: i.period,
+        description: i.description || '',
+      })),
+      certifications: profile.certifications || [],
+      achievements: profile.achievements || [],
+      otherInfo: profile.otherInfo || '',
     } : undefined;
 
     // Send last 6 conversation turns for complete follow-up and pronoun resolution
@@ -146,7 +162,7 @@ ${dossier}`;
         signal: abortController.signal,
         body: JSON.stringify({
           question: cleanQ,
-          candidateProfile: minimalProfile,
+          candidateProfile: activeProfile,
           conversationHistory: conversationTurns,
           style: optionsRef.current.answerStyle,
         }),

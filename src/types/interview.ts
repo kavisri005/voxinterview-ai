@@ -45,6 +45,8 @@ export interface ExperienceEntry {
 
 export interface CandidateProfile {
   name: string;
+  email?: string;
+  phone?: string;
   targetRole: string;
   degree: string;
   college: string;
@@ -53,10 +55,13 @@ export interface CandidateProfile {
   technicalSkills: string[];
   programmingLanguages: string[];
   frameworks: string[];
+  testingAutomationSkills?: string[];
   toolsDatabases: string[];
   projects: ProjectEntry[];
   experience: ExperienceEntry[];
+  internships?: ExperienceEntry[];
   certifications: string[];
+  achievements?: string[];
   otherInfo: string;
 }
 

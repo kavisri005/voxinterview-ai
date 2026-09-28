@@ -2,6 +2,8 @@ import { CandidateProfile } from '../types/interview';
 
 export const DEFAULT_CANDIDATE_PROFILE: CandidateProfile = {
   name: 'Alex Rivera',
+  email: 'alex.rivera@example.com',
+  phone: '+1 (555) 234-5678',
   targetRole: 'Senior Full-Stack Engineer',
   degree: 'B.S. in Computer Science',
   college: 'University of Washington',
@@ -18,6 +20,7 @@ export const DEFAULT_CANDIDATE_PROFILE: CandidateProfile = {
   ],
   programmingLanguages: ['TypeScript', 'JavaScript', 'Python', 'Go', 'SQL'],
   frameworks: ['React', 'Next.js', 'Node.js', 'Express', 'TailwindCSS', 'FastAPI'],
+  testingAutomationSkills: ['Jest', 'Cypress', 'Playwright', 'Automation Testing'],
   toolsDatabases: ['PostgreSQL', 'Redis', 'Docker', 'AWS (S3, Lambda)', 'Git', 'Kafka'],
   projects: [
     {
@@ -59,9 +62,22 @@ export const DEFAULT_CANDIDATE_PROFILE: CandidateProfile = {
         'Implemented streaming telemetry features in React and built an internal automated load testing framework using Go, boosting developer test coverage by 40%.',
     },
   ],
+  internships: [
+    {
+      id: 'int-1',
+      role: 'Full-Stack Engineering Intern',
+      company: 'DataFlow Systems',
+      period: 'Summer 2021',
+      description: 'Built automated test suites with Jest and Cypress, reducing regression cycle time by 25%.',
+    },
+  ],
   certifications: [
     'AWS Certified Solutions Architect – Associate',
     'Meta Certified Front-End Developer',
+  ],
+  achievements: [
+    '1st Place Winner – HackSeattle 2022',
+    'Published technical article on real-time WebSockets with 10k+ readers',
   ],
   otherInfo:
     'Passionate about web performance, developer experience, and clean modular code architecture. Active contributor to open-source UI libraries.',
