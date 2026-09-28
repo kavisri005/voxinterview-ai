@@ -1,0 +1,10 @@
+{
+  "name": "VoxInterview AI – Real-Time Interview Assistant",
+  "description": "Real-time speech transcription, silence-based question detection, and instantaneous AI-powered answer generation tailored to the candidate's profile.",
+  "requestFramePermissions": [
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
