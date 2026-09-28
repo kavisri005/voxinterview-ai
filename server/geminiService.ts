@@ -51,6 +51,7 @@ export interface GenerateAnswerOptions {
   profile?: CandidateProfile;
   conversationHistory?: ConversationMessage[];
   style?: 'concise' | 'detailed' | 'bullet';
+  customApiKey?: string;
 }
 
 /**
@@ -169,13 +170,18 @@ export async function streamAnswerGeneration(
     parts: [{ text: promptText }],
   });
 
-  // Prioritize flash-lite for sub-second TTFT, with robust fallbacks
   const candidateModels = ['gemini-3.1-flash-lite', 'gemini-flash-latest', 'gemini-3.8-flash'];
   let lastError: any = null;
+  const activeAi = options.customApiKey?.trim()
+    ? new GoogleGenAI({
+        apiKey: options.customApiKey.trim(),
+        httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
+      })
+    : ai;
 
   for (const modelName of candidateModels) {
     try {
-      const responseStream = await ai.models.generateContentStream({
+      const responseStream = await activeAi.models.generateContentStream({
         model: modelName,
         contents: contents,
         config: {

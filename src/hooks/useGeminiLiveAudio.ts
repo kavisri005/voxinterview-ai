@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { downsampleToPcm16, arrayBufferToBase64, encodeWav } from '../utils/audioPcm';
+import { downsampleToPcm16, arrayBufferToBase64 } from '../utils/audioPcm';
 import { CandidateProfile, ConversationTurn, QuestionCategory } from '../types/interview';
 
 export interface UseGeminiLiveAudioOptions {
@@ -36,12 +36,18 @@ export function useGeminiLiveAudio(options: UseGeminiLiveAudioOptions) {
   const wsRef = useRef<WebSocket | null>(null);
   const isWsReadyRef = useRef<boolean>(false);
   const isRecordingRef = useRef<boolean>(false);
-  const answerAccumulatorRef = useRef<string>('');
+  const isGeneratingRef = useRef<boolean>(false);
+  const answerAbortControllerRef = useRef<AbortController | null>(null);
+
+  // Real-time live transcript accumulators
+  const finalizedSegmentsRef = useRef<string>('');
+  const currentInterimRef = useRef<string>('');
   const questionAccumulatorRef = useRef<string>('');
-  const pcmChunksRef = useRef<ArrayBuffer[]>([]);
+  const answerAccumulatorRef = useRef<string>('');
+  const vadFinalizedRef = useRef<boolean>(false);
+
   const silenceTimerRef = useRef<NodeJS.Timeout | null>(null);
   const lastSpeechTimeRef = useRef<number>(0);
-  const fallbackTriggeredRef = useRef<boolean>(false);
 
   // Builds prompt string representing the candidate's actual dossier
   const buildSystemInstruction = useCallback(() => {
@@ -90,46 +96,36 @@ ${dossier}
 ${recentHistoryText ? `RECENT CONVERSATION HISTORY:\n${recentHistoryText}` : ''}`;
   }, []);
 
-  // Server-side audio fallback pipeline (SSE)
-  const processBufferedAudioFallback = useCallback(async () => {
-    if (fallbackTriggeredRef.current || pcmChunksRef.current.length === 0) return;
-    fallbackTriggeredRef.current = true;
+  // Streams first-person answer for a finalized question via SSE (/api/answer)
+  const streamAnswerForQuestion = useCallback(async (question: string) => {
+    const cleanQ = question.trim();
+    if (!cleanQ || cleanQ.split(/\s+/).length < 2) return;
+    if (isGeneratingRef.current) return;
 
-    optionsRef.current.onStatusChange?.('UNDERSTANDING');
+    isGeneratingRef.current = true;
     setIsGenerating(true);
+    optionsRef.current.onStatusChange?.('GENERATING');
+    setGeneratedAnswer('');
+    answerAccumulatorRef.current = '';
+
+    if (answerAbortControllerRef.current) {
+      answerAbortControllerRef.current.abort();
+    }
+    const abortController = new AbortController();
+    answerAbortControllerRef.current = abortController;
 
     try {
-      // Calculate total buffer length and merge chunks
-      let totalLength = 0;
-      for (const chunk of pcmChunksRef.current) {
-        totalLength += chunk.byteLength;
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (optionsRef.current.customApiKey?.trim()) {
+        headers['x-gemini-key'] = optionsRef.current.customApiKey.trim();
       }
 
-      if (totalLength < 16000 * 2 * 0.5) {
-        // Less than 0.5s of audio
-        setIsGenerating(false);
-        optionsRef.current.onStatusChange?.(isRecordingRef.current ? 'LISTENING' : 'READY');
-        return;
-      }
-
-      const mergedPcm = new Uint8Array(totalLength);
-      let offset = 0;
-      for (const chunk of pcmChunksRef.current) {
-        mergedPcm.set(new Uint8Array(chunk), offset);
-        offset += chunk.byteLength;
-      }
-
-      const wavBuffer = encodeWav(mergedPcm.buffer, 16000);
-      const audioBase64 = arrayBufferToBase64(wavBuffer);
-
-      optionsRef.current.onStatusChange?.('GENERATING');
-
-      const response = await fetch('/api/audio-answer', {
+      const response = await fetch('/api/answer', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
+        signal: abortController.signal,
         body: JSON.stringify({
-          audioBase64,
-          mimeType: 'audio/wav',
+          question: cleanQ,
           candidateProfile: optionsRef.current.candidateProfile,
           conversationHistory: optionsRef.current.conversationHistory,
           style: optionsRef.current.answerStyle,
@@ -138,7 +134,7 @@ ${recentHistoryText ? `RECENT CONVERSATION HISTORY:\n${recentHistoryText}` : ''}
 
       if (!response.ok) {
         const err = await response.json().catch(() => ({}));
-        throw new Error(err.error || `Server returned ${response.status}`);
+        throw new Error(err.error || `Answer service returned ${response.status}`);
       }
 
       const reader = response.body?.getReader();
@@ -147,7 +143,7 @@ ${recentHistoryText ? `RECENT CONVERSATION HISTORY:\n${recentHistoryText}` : ''}
       const decoder = new TextDecoder('utf-8');
       let streamBuffer = '';
       let accumulated = '';
-      let recognizedQuestion = '';
+      let metadata: any = null;
 
       while (true) {
         const { done, value } = await reader.read();
@@ -174,29 +170,21 @@ ${recentHistoryText ? `RECENT CONVERSATION HISTORY:\n${recentHistoryText}` : ''}
 
           try {
             const data = JSON.parse(dataStr);
-            if (eventType === 'chunk' && data.chunk) {
+            if (eventType === 'meta') {
+              metadata = data;
+            } else if (eventType === 'chunk' && data.chunk) {
               accumulated += data.chunk;
-              // Filter out question prefix from displayed answer if present
-              const cleanAns = accumulated.replace(/^QUESTION:\s*[^\n\r]+[\r\n]*/i, '').trim();
-              setGeneratedAnswer(cleanAns);
-              optionsRef.current.onAnswerChunk?.(data.chunk, cleanAns);
+              setGeneratedAnswer(accumulated);
+              optionsRef.current.onAnswerChunk?.(data.chunk, accumulated);
             } else if (eventType === 'end') {
-              recognizedQuestion = data.question || '';
-              const finalAns = (data.fullAnswer || accumulated).replace(/^QUESTION:\s*[^\n\r]+[\r\n]*/i, '').trim();
-              if (recognizedQuestion) {
-                setDetectedQuestion(recognizedQuestion);
-                optionsRef.current.onQuestionUnderstood?.(
-                  recognizedQuestion,
-                  data.category as QuestionCategory,
-                  data.intent
-                );
-              }
+              const finalAns = data.fullAnswer || accumulated;
               setGeneratedAnswer(finalAns);
               optionsRef.current.onAnswerComplete?.(finalAns, {
-                category: data.category,
-                intent: data.intent,
+                category: data.category || metadata?.category,
+                intent: data.intent || metadata?.intent,
               });
               optionsRef.current.onStatusChange?.('ANSWER_READY');
+              vadFinalizedRef.current = true;
             } else if (eventType === 'error') {
               throw new Error(data.message || 'Stream error');
             }
@@ -206,22 +194,58 @@ ${recentHistoryText ? `RECENT CONVERSATION HISTORY:\n${recentHistoryText}` : ''}
         }
       }
     } catch (err: any) {
-      console.error('Audio processing fallback error:', err);
-      setErrorMessage(err.message || 'Failed to analyze audio');
-      optionsRef.current.onError?.(err.message || 'Failed to analyze audio');
-      optionsRef.current.onStatusChange?.('READY');
+      if (err.name !== 'AbortError') {
+        console.error('Answer stream error:', err);
+        optionsRef.current.onError?.(err.message || 'Failed to stream answer');
+        optionsRef.current.onStatusChange?.('READY');
+      }
     } finally {
+      isGeneratingRef.current = false;
       setIsGenerating(false);
-      // Clear buffer for next turn
-      pcmChunksRef.current = [];
     }
   }, []);
+
+  // Handles turn completion detected by Gemini VAD or silence detector
+  const handleVadTurnComplete = useCallback(async () => {
+    // 1. Finalize the complete transcript
+    const finalQuestion = (
+      finalizedSegmentsRef.current + ' ' + currentInterimRef.current
+    ).trim() || questionAccumulatorRef.current.trim();
+
+    if (!finalQuestion || finalQuestion.split(/\s+/).length < 2) return;
+
+    // 2. Show the complete question
+    setDetectedQuestion(finalQuestion);
+    optionsRef.current.onQuestionUnderstood?.(finalQuestion);
+
+    // If the Live WebSocket modelTurn already streamed an answer, complete it
+    if (answerAccumulatorRef.current.trim()) {
+      setIsGenerating(false);
+      isGeneratingRef.current = false;
+      const finalAnswer = answerAccumulatorRef.current.trim();
+      optionsRef.current.onAnswerComplete?.(finalAnswer);
+      optionsRef.current.onStatusChange?.('ANSWER_READY');
+      vadFinalizedRef.current = true;
+      finalizedSegmentsRef.current = '';
+      currentInterimRef.current = '';
+      answerAccumulatorRef.current = '';
+      return;
+    }
+
+    // 3. Send the question to Gemini
+    // 4. Generate a concise first-person interview answer
+    // 5. Stream the answer into the "AI Suggested Answer" section
+    await streamAnswerForQuestion(finalQuestion);
+  }, [streamAnswerForQuestion]);
 
   // Connects WebSocket to Gemini Live API
   const connectGeminiLiveWebSocket = useCallback(async () => {
     isWsReadyRef.current = false;
     answerAccumulatorRef.current = '';
     questionAccumulatorRef.current = '';
+    finalizedSegmentsRef.current = '';
+    currentInterimRef.current = '';
+    vadFinalizedRef.current = false;
 
     let wsUrl = '';
     let token = '';
@@ -253,9 +277,9 @@ ${recentHistoryText ? `RECENT CONVERSATION HISTORY:\n${recentHistoryText}` : ''}
       wsUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=${encodeURIComponent(key)}`;
     }
 
-    // If no direct WebSocket credentials, the real-time audio buffer will use /api/audio-answer directly
     if (!wsUrl) {
-      console.info('Direct WebSocket token not available; using real-time audio pipeline via server.');
+      console.info('Direct WebSocket token not available; please ensure GEMINI_API_KEY is configured.');
+      optionsRef.current.onError?.('Gemini Live session requires an API key. Please check Settings or server environment.');
       return;
     }
 
@@ -265,7 +289,7 @@ ${recentHistoryText ? `RECENT CONVERSATION HISTORY:\n${recentHistoryText}` : ''}
 
       ws.onopen = () => {
         console.log('Gemini Live API WebSocket connected');
-        // Send initial setup message with TEXT modality
+        // Send initial setup message with TEXT response modality and inputAudioTranscription enabled
         const setupMessage = {
           setup: {
             model: 'models/gemini-2.0-flash-exp',
@@ -289,30 +313,75 @@ ${recentHistoryText ? `RECENT CONVERSATION HISTORY:\n${recentHistoryText}` : ''}
           if (!raw) return;
           const msg = JSON.parse(raw);
 
-          // Setup complete
-          if (msg.setupComplete) {
+          // 1. Setup complete
+          if (msg.setupComplete || msg.setup_complete) {
             isWsReadyRef.current = true;
             optionsRef.current.onStatusChange?.('LISTENING');
             return;
           }
 
-          const serverContent = msg.serverContent;
+          const serverContent = msg.serverContent || msg.server_content;
           if (!serverContent) return;
 
-          // 1. Live input audio transcription (Interviewer's spoken question)
-          if (serverContent.inputTranscription?.text) {
-            questionAccumulatorRef.current += serverContent.inputTranscription.text;
-            const q = questionAccumulatorRef.current.trim();
-            setDetectedQuestion(q);
-            optionsRef.current.onStatusChange?.('UNDERSTANDING');
-            optionsRef.current.onQuestionUnderstood?.(q);
+          // 2. LIVE INPUT TRANSCRIPTION WHILE INTERVIEWER IS SPEAKING
+          const interim =
+            serverContent.interimInputTranscription ||
+            serverContent.interim_input_transcription;
+
+          const inputTx =
+            serverContent.inputTranscription ||
+            serverContent.input_transcription;
+
+          let transcriptUpdated = false;
+
+          // If starting a new utterance after previous answer was finalized, clear old buffers
+          if (vadFinalizedRef.current && (interim?.text || inputTx?.text)) {
+            vadFinalizedRef.current = false;
+            finalizedSegmentsRef.current = '';
+            currentInterimRef.current = '';
+            answerAccumulatorRef.current = '';
+            setGeneratedAnswer('');
           }
 
-          // 2. Model text answer stream (Candidate spoken answer)
-          if (serverContent.modelTurn?.parts) {
+          // In-progress words updated in real time as the interviewer speaks
+          if (interim && typeof interim.text === 'string' && interim.text.trim()) {
+            currentInterimRef.current = interim.text.trim();
+            transcriptUpdated = true;
+          }
+
+          // Finalized speech segment
+          if (inputTx && typeof inputTx.text === 'string' && inputTx.text.trim()) {
+            if (inputTx.finished) {
+              finalizedSegmentsRef.current = (
+                finalizedSegmentsRef.current + ' ' + inputTx.text.trim()
+              ).trim();
+              currentInterimRef.current = '';
+            } else {
+              currentInterimRef.current = inputTx.text.trim();
+            }
+            transcriptUpdated = true;
+          }
+
+          // Continuously show recognized speech as LIVE TEXT in Interviewer's Question
+          if (transcriptUpdated) {
+            const liveQuestion = (
+              finalizedSegmentsRef.current + ' ' + currentInterimRef.current
+            ).trim();
+
+            if (liveQuestion) {
+              questionAccumulatorRef.current = liveQuestion;
+              setDetectedQuestion(liveQuestion);
+              optionsRef.current.onQuestionUnderstood?.(liveQuestion);
+              optionsRef.current.onStatusChange?.('UNDERSTANDING');
+            }
+          }
+
+          // 3. Model text answer stream from WebSocket if emitted
+          const modelTurn = serverContent.modelTurn || serverContent.model_turn;
+          if (modelTurn?.parts) {
             optionsRef.current.onStatusChange?.('GENERATING');
             setIsGenerating(true);
-            for (const part of serverContent.modelTurn.parts) {
+            for (const part of modelTurn.parts) {
               if (part.text) {
                 answerAccumulatorRef.current += part.text;
                 setGeneratedAnswer(answerAccumulatorRef.current);
@@ -321,22 +390,19 @@ ${recentHistoryText ? `RECENT CONVERSATION HISTORY:\n${recentHistoryText}` : ''}
             }
           }
 
-          // 3. Turn complete
-          if (serverContent.turnComplete) {
-            setIsGenerating(false);
-            const finalAnswer = answerAccumulatorRef.current;
-            optionsRef.current.onAnswerComplete?.(finalAnswer);
-            optionsRef.current.onStatusChange?.('ANSWER_READY');
-            // Reset for next question in session
-            answerAccumulatorRef.current = '';
-            questionAccumulatorRef.current = '';
+          // 4. VAD Turn Complete (Interviewer finished speaking)
+          const turnComplete = serverContent.turnComplete || serverContent.turn_complete;
+          if (turnComplete) {
+            handleVadTurnComplete();
           }
 
-          // 4. Interruption
+          // 5. Interruption signal
           if (serverContent.interrupted) {
-            console.log('Interviewer interrupted/resumed speaking');
+            console.log('Interviewer interrupted / resumed speaking');
             optionsRef.current.onStatusChange?.('UNDERSTANDING');
             answerAccumulatorRef.current = '';
+            finalizedSegmentsRef.current = '';
+            currentInterimRef.current = '';
           }
         } catch (parseErr) {
           console.warn('Error parsing Live API WebSocket packet:', parseErr);
@@ -354,15 +420,18 @@ ${recentHistoryText ? `RECENT CONVERSATION HISTORY:\n${recentHistoryText}` : ''}
     } catch (e) {
       console.warn('Failed to establish WebSocket to Gemini Live API:', e);
     }
-  }, [buildSystemInstruction]);
+  }, [buildSystemInstruction, handleVadTurnComplete]);
 
   // Start recording
   const startListening = useCallback(async () => {
     setErrorMessage(null);
     setDetectedQuestion('');
     setGeneratedAnswer('');
-    fallbackTriggeredRef.current = false;
-    pcmChunksRef.current = [];
+    finalizedSegmentsRef.current = '';
+    currentInterimRef.current = '';
+    questionAccumulatorRef.current = '';
+    answerAccumulatorRef.current = '';
+    vadFinalizedRef.current = false;
     isRecordingRef.current = true;
     setIsListening(true);
     optionsRef.current.onStatusChange?.('CONNECTING');
@@ -419,13 +488,17 @@ ${recentHistoryText ? `RECENT CONVERSATION HISTORY:\n${recentHistoryText}` : ''}
           }
         } else if (lastSpeechTimeRef.current > 0 && Date.now() - lastSpeechTimeRef.current > 1200) {
           // 1.2s silence detected after speech
-          if (!silenceTimerRef.current && pcmChunksRef.current.length > 0 && !fallbackTriggeredRef.current) {
+          const hasUnfinishedQuestion =
+            (finalizedSegmentsRef.current || currentInterimRef.current || questionAccumulatorRef.current) &&
+            !vadFinalizedRef.current &&
+            !isGeneratingRef.current;
+
+          if (!silenceTimerRef.current && hasUnfinishedQuestion) {
             silenceTimerRef.current = setTimeout(() => {
-              if (isRecordingRef.current && !isWsReadyRef.current) {
-                // If direct WebSocket turn did not fire, process the buffered speech turn
-                processBufferedAudioFallback();
+              if (isRecordingRef.current && !vadFinalizedRef.current && !isGeneratingRef.current) {
+                handleVadTurnComplete();
               }
-            }, 300);
+            }, 200);
           }
         }
 
@@ -445,17 +518,18 @@ ${recentHistoryText ? `RECENT CONVERSATION HISTORY:\n${recentHistoryText}` : ''}
 
         // Convert to 16kHz 16-bit mono PCM
         const pcm16 = downsampleToPcm16(inputData, audioCtx.sampleRate, 16000);
-        pcmChunksRef.current.push(pcm16);
 
-        // If WebSocket is active, send real-time audio chunk directly
+        // Send real-time audio chunk directly over WebSocket
         if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && isWsReadyRef.current) {
           const base64Data = arrayBufferToBase64(pcm16);
           const chunkMsg = {
             realtimeInput: {
-              audio: {
-                data: base64Data,
-                mimeType: 'audio/pcm;rate=16000',
-              },
+              mediaChunks: [
+                {
+                  mimeType: 'audio/pcm;rate=16000',
+                  data: base64Data,
+                },
+              ],
             },
           };
           wsRef.current.send(JSON.stringify(chunkMsg));
@@ -477,7 +551,7 @@ ${recentHistoryText ? `RECENT CONVERSATION HISTORY:\n${recentHistoryText}` : ''}
       optionsRef.current.onError?.(msg);
       optionsRef.current.onStatusChange?.('READY');
     }
-  }, [connectGeminiLiveWebSocket, processBufferedAudioFallback]);
+  }, [connectGeminiLiveWebSocket, handleVadTurnComplete]);
 
   // Stop recording
   const stopListening = useCallback(() => {
@@ -488,6 +562,11 @@ ${recentHistoryText ? `RECENT CONVERSATION HISTORY:\n${recentHistoryText}` : ''}
     if (silenceTimerRef.current) {
       clearTimeout(silenceTimerRef.current);
       silenceTimerRef.current = null;
+    }
+
+    if (answerAbortControllerRef.current) {
+      answerAbortControllerRef.current.abort();
+      answerAbortControllerRef.current = null;
     }
 
     // Flush audio stream to Gemini Live API
@@ -524,13 +603,17 @@ ${recentHistoryText ? `RECENT CONVERSATION HISTORY:\n${recentHistoryText}` : ''}
       animFrameRef.current = null;
     }
 
-    // If WebSocket turn didn't complete and we have buffered speech, process turn
-    if (!fallbackTriggeredRef.current && pcmChunksRef.current.length > 0 && !answerAccumulatorRef.current) {
-      processBufferedAudioFallback();
+    // If an unfinalized question was spoken, finalize and generate answer
+    const currentQuestion = (
+      finalizedSegmentsRef.current + ' ' + currentInterimRef.current
+    ).trim() || questionAccumulatorRef.current.trim();
+
+    if (currentQuestion && !vadFinalizedRef.current && !answerAccumulatorRef.current) {
+      handleVadTurnComplete();
     } else {
       optionsRef.current.onStatusChange?.('READY');
     }
-  }, [processBufferedAudioFallback]);
+  }, [handleVadTurnComplete]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -551,6 +634,9 @@ ${recentHistoryText ? `RECENT CONVERSATION HISTORY:\n${recentHistoryText}` : ''}
       }
       if (silenceTimerRef.current) {
         clearTimeout(silenceTimerRef.current);
+      }
+      if (answerAbortControllerRef.current) {
+        answerAbortControllerRef.current.abort();
       }
     };
   }, []);

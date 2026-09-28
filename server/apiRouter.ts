@@ -45,7 +45,12 @@ apiRouter.post('/analyze', (req: Request, res: Response) => {
 
 // Stream answer generation for detected question via real Server-Sent Events (SSE)
 apiRouter.post('/answer', async (req: Request, res: Response) => {
-  const { question, profile, candidateProfile, conversationHistory, style, preAnalysis } = req.body || {};
+  const { question, profile, candidateProfile, conversationHistory, style, preAnalysis, customApiKey } = req.body || {};
+  const clientKey =
+    customApiKey ||
+    (req.headers['x-gemini-key'] as string) ||
+    (req.headers['authorization'] ? (req.headers['authorization'] as string).replace(/^Bearer\s+/i, '') : '') ||
+    (typeof req.query.key === 'string' ? req.query.key : '');
 
   if (!question || typeof question !== 'string' || !question.trim()) {
     return res.status(400).json({ error: 'Valid question text is required' });
@@ -82,6 +87,7 @@ apiRouter.post('/answer', async (req: Request, res: Response) => {
         profile: activeProfile,
         conversationHistory,
         style,
+        customApiKey: clientKey,
       },
       (chunk) => {
         res.write(`event: chunk\ndata: ${JSON.stringify({ chunk })}\n\n`);

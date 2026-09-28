@@ -536,11 +536,14 @@ export default function App() {
                 {detectedQuestion ? (
                   <p className="text-base sm:text-lg font-bold text-white leading-snug">
                     "{detectedQuestion}"
+                    {isListening && !isGenerating && (
+                      <span className="inline-block w-1.5 h-4 ml-1.5 bg-indigo-400 animate-pulse align-middle" />
+                    )}
                   </p>
                 ) : (
                   <p className="text-xs sm:text-sm text-slate-500 italic">
                     {isListening
-                      ? 'Listening to interviewer... Question will be understood automatically.'
+                      ? 'Listening to interviewer... Question will appear here in real time as they speak.'
                       : 'Press Start Listening and speak into the microphone.'}
                   </p>
                 )}
