@@ -10,11 +10,6 @@ export function getGeminiClient(customApiKey?: string): GoogleGenAI {
   const activeKey = customApiKey?.trim() || process.env.GEMINI_API_KEY || '';
   return new GoogleGenAI({
     apiKey: activeKey,
-    httpOptions: {
-      headers: {
-        'User-Agent': 'aistudio-build',
-      },
-    },
   });
 }
 
@@ -217,13 +212,12 @@ export async function streamAnswerGeneration(
   });
 
   const candidateModels = ['gemini-2.0-flash', 'gemini-2.5-flash', 'gemini-2.0-flash-lite', 'gemini-1.5-flash'];
-  let lastError: any = null;
-  const activeAi = options.customApiKey?.trim()
-    ? new GoogleGenAI({
-        apiKey: options.customApiKey.trim(),
-        httpOptions: { headers: { 'User-Agent': 'aistudio-build' } },
-      })
-    : ai;
+  const activeKey = options.customApiKey?.trim() || process.env.GEMINI_API_KEY?.trim() || '';
+  if (!activeKey) {
+    throw new Error('GEMINI_API_KEY is not configured on the server. Please add GEMINI_API_KEY to environment variables or Settings.');
+  }
+  const activeAi = new GoogleGenAI({ apiKey: activeKey });
+  const attemptErrors: string[] = [];
 
   for (const modelName of candidateModels) {
     try {
@@ -261,13 +255,15 @@ export async function streamAnswerGeneration(
         };
       }
     } catch (err: any) {
-      console.warn(`Model ${modelName} stream attempt error:`, err?.message || err);
+      const errMsg = err?.message || String(err);
+      console.warn(`Model ${modelName} stream attempt error:`, errMsg);
+      attemptErrors.push(`[${modelName}]: ${errMsg}`);
       lastError = err;
       continue;
     }
   }
 
-  throw lastError || new Error('Failed to generate answer from candidate models.');
+  throw new Error(`Failed to generate answer from candidate models. Errors: ${attemptErrors.join(' | ')}`);
 }
 
 
