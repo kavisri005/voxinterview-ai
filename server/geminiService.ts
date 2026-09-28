@@ -211,7 +211,7 @@ export async function streamAnswerGeneration(
     parts: [{ text: promptText }],
   });
 
-  const candidateModels = ['gemini-2.0-flash', 'gemini-2.5-flash', 'gemini-2.0-flash-lite', 'gemini-1.5-flash'];
+  const candidateModels = ['gemini-3.8-flash', 'gemini-3.5-flash-lite'];
   const activeKey = options.customApiKey?.trim() || process.env.GEMINI_API_KEY?.trim() || '';
   if (!activeKey) {
     throw new Error('GEMINI_API_KEY is not configured on the server. Please add GEMINI_API_KEY to environment variables or Settings.');
@@ -227,10 +227,6 @@ export async function streamAnswerGeneration(
         topP: 0.9,
         maxOutputTokens: 380,
       };
-
-      if (modelName === 'gemini-2.5-flash') {
-        config.thinkingConfig = { thinkingBudget: 0 };
-      }
 
       const responseStream = await activeAi.models.generateContentStream({
         model: modelName,
