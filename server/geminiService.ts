@@ -258,7 +258,6 @@ export async function streamAnswerGeneration(
       const errMsg = err?.message || String(err);
       console.warn(`Model ${modelName} stream attempt error:`, errMsg);
       attemptErrors.push(`[${modelName}]: ${errMsg}`);
-      lastError = err;
       continue;
     }
   }
