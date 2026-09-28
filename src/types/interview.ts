@@ -5,7 +5,16 @@ export type QuestionCategory =
   | 'Project'
   | 'Resume'
   | 'Coding'
-  | 'General';
+  | 'General'
+  | 'System Design'
+  | 'Technical Concepts'
+  | 'Coding & Algorithms'
+  | 'Behavioral & Situational'
+  | 'Project & Architecture'
+  | 'Experience & Background'
+  | 'HR & Culture Fit'
+  | 'Contextual Follow-up'
+  | (string & {});
 
 export type AssistantStatus =
   | 'READY'
@@ -13,6 +22,7 @@ export type AssistantStatus =
   | 'LISTENING...'
   | 'UNDERSTANDING...'
   | 'QUESTION DETECTED'
+  | 'ANALYZING...'
   | 'GENERATING...'
   | 'ANSWER READY';
 

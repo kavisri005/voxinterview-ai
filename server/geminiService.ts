@@ -70,84 +70,111 @@ export interface GenerateAnswerOptions {
 }
 
 /**
- * Builds a compact, high-impact prompt for Gemini low-latency generation.
+ * Builds an adaptive, high-impact prompt for general-purpose interview question answering.
+ * Combines ChatGPT-style broad intelligence with candidate dossier truth.
  */
 function buildSystemInstruction(profile?: CandidateProfile): string {
-  let profileSection = 'No specific candidate profile provided. Answer as an articulate, competent software engineer speaking from personal experience.';
+  let profileSection = 'No candidate profile specified. Answer general/technical questions with deep expertise, and role questions with articulate competence.';
 
   if (profile && (profile.name || profile.technicalSkills?.length || profile.projects?.length)) {
-    profileSection = `
-CANDIDATE DOSSIER (Ground Truth - NEVER invent experiences, skills, or projects not listed here):
+    const role = profile.targetRole || 'Software Engineer';
+    const skills = [
+      ...(profile.technicalSkills || []),
+      ...(profile.programmingLanguages || []),
+      ...(profile.frameworks || []),
+      ...(profile.toolsDatabases || []),
+    ].filter(Boolean).slice(0, 12).join(', ');
+
+    const projects = (profile.projects || [])
+      .slice(0, 3)
+      .map(
+        (p) =>
+          `"${p.title}" (${p.techStack}): ${p.description}${p.highlights ? ` [Key Highlights: ${p.highlights}]` : ''}`
+      )
+      .join('; ');
+
+    const experience = (profile.experience || [])
+      .slice(0, 2)
+      .map((e) => `${e.role} at ${e.company} (${e.period}): ${e.description}`)
+      .join('; ');
+
+    profileSection = `CANDIDATE DOSSIER (Ground Truth):
 - Name: ${profile.name || 'Candidate'}
-- Target Role: ${profile.targetRole || 'Software Engineer'}
-- Education: ${profile.degree || 'Degree'} at ${profile.college || 'University'} (${profile.gradYear || ''})
-- Summary: ${profile.summary || 'N/A'}
-- Core Skills: ${(profile.technicalSkills || []).join(', ')}
-- Languages: ${(profile.programmingLanguages || []).join(', ')}
-- Frameworks & Tools: ${(profile.frameworks || []).concat(profile.toolsDatabases || []).join(', ')}
-- Projects:
-${(profile.projects || [])
-  .map(
-    (p, idx) =>
-      `  [Project ${idx + 1}] "${p.title}" (Tech: ${p.techStack}): ${p.description} ${p.highlights ? `Key Achievements: ${p.highlights}` : ''}`
-  )
-  .join('\n')}
-- Experience:
-${(profile.experience || [])
-  .map((e) => `  - ${e.role} at ${e.company} (${e.period}): ${e.description}`)
-  .join('\n')}
-- Certifications: ${(profile.certifications || []).join(', ')}
-- Additional Info: ${profile.otherInfo || 'N/A'}
-`;
+- Target Role: ${role}
+- Core Skills: ${skills}
+- Projects: ${projects || 'N/A'}
+- Experience: ${experience || 'N/A'}
+- Education: ${profile.degree || ''} ${profile.college ? `at ${profile.college}` : ''}
+- Summary: ${profile.summary || 'N/A'}`;
   }
 
-  return `You are a real-time interview co-pilot whisperer for a candidate sitting in an active live interview.
-Your role is to produce natural, confident, direct first-person spoken answers ("I", "in my experience", "on my team", "in my project...") that the candidate can read and speak aloud naturally without hesitation.
+  return `You are VoxInterview AI, a state-of-the-art, general-purpose interview question answering agent and live co-pilot. You combine the broad, accurate reasoning of a top-tier conversational AI with personalized grounded responses.
 
-CRITICAL RULES:
-1. STRICT TRUTH TO CANDIDATE DOSSIER: NEVER invent companies, degrees, metrics, projects, or technologies that the candidate does not have in their dossier. If asked about a project or experience, draw strictly from their real projects.
-2. ANSWER LENGTH & PACING: Keep answers between 2 to 4 punchy, natural sentences (around 50-85 words) by default. For deep system architecture or complex coding/technical questions, provide up to 5 structured sentences.
-3. CONVERSATIONAL & EASY TO SPEAK: Avoid textbook definitions, bulleted fluff, or throat-clearing openings like "Certainly, I'd be happy to explain" or "That is a great question". Jump straight into the authentic answer.
-4. FOLLOW-UP AWARENESS: If the interviewer asks a follow-up ("What technologies did you use in it?", "Why did you choose that?", "What was the hardest part?"), use the recent conversation history to identify what "it" refers to and answer seamlessly.
-5. NO VOICE DIRECTIVES: Do not include stage directions like "(laughs)" or "(pause)". Output clean spoken text.
-6. PUNCHY KEY CUES: At the end of your spoken response, you may add 1-2 high-yield bullet cues starting with "• " (e.g. • Key metric: 40ms sync latency • Stack: React, WebSockets, CRDTs) to give the candidate quick anchor points.
+CORE OPERATING PRINCIPLES:
+1. UNRESTRICTED GENERAL-PURPOSE SCOPE:
+   You answer ANY question asked by the interviewer. You are NOT restricted to predefined categories. Whether the question is technical, system design, architecture, live coding, algorithms, behavioral, HR, resume-specific, situational, domain knowledge, or general inquiry, directly provide an accurate, high-quality answer.
+
+2. ADAPTIVE CONTEXT & PERSPECTIVE:
+   - When the question is about the candidate (their background, resume, specific projects, decisions, teamwork, past challenges): Speak in a natural, confident first-person style ("I", "in my project...", "my approach was..."). Strictly draw from the CANDIDATE DOSSIER below. NEVER invent non-existent companies, degrees, or projects.
+   - When the question is technical or conceptual (e.g. "How does the virtual DOM work?", "Explain event-driven architecture", "What is an index in SQL?"): Use your deep general model intelligence to give a crystal-clear, accurate explanation, with a small concrete example or syntax snippet when useful.
+   - When the question is coding or algorithmic: Clearly outline the optimal algorithmic approach, time/space complexity, and clean code or pattern when appropriate.
+   - When the question is behavioral: Provide a realistic, structured response grounded in the candidate's actual projects and experience.
+   - When the question is project-related: Use only the candidate's actual project information and technical stack.
+
+3. CONVERSATION MEMORY & FOLLOW-UP RESOLUTION:
+   Maintain active conversation context across turns. For follow-ups like:
+   "What did you use?" / "Why did you choose it?" / "How does it work?" / "Tell me more about that project" / "How would you optimize this approach?"
+   seamlessly resolve pronouns ("it", "that", "this") from previous questions and answers.
+
+4. AMBIGUOUS QUESTIONS:
+   If a question is short or ambiguous, infer the most likely interview context and answer naturally. Never ask "could you clarify?" or return "unsupported question" or generic error fallbacks.
+
+5. SPEAKABILITY & CONCISENESS:
+   - Deliver the answer directly without repeating the question or adding conversational throat-clearing ("Sure, I can answer that...").
+   - Keep answers speakable and concise enough for an active interview (typically 2 to 4 crisp sentences, or structured bullet/code points when technical depth is required).
 
 ${profileSection}`;
 }
 
 /**
- * Classifies question intent and category.
+ * Classifies question intent and category dynamically without ever restricting questions.
  */
 export function classifyQuestion(question: string): {
-  category: 'Technical' | 'HR' | 'Behavioral' | 'Project' | 'Resume' | 'Coding' | 'General';
+  category: string;
   intent: string;
 } {
-  const lower = question.toLowerCase();
+  const lower = question.toLowerCase().trim();
   
-  if (lower.includes('project') || lower.includes('portfolio') || lower.includes('built') || lower.includes('app you worked on') || lower.includes('your application') || lower.includes('syncflow') || lower.includes('pipeline')) {
-    return { category: 'Project', intent: 'Discussing candidate project architecture, decisions, and outcomes' };
+  if (lower.includes('project') || lower.includes('portfolio') || lower.includes('built') || lower.includes('app you worked on') || lower.includes('your application') || lower.includes('pipeline') || lower.includes('architecture')) {
+    return { category: 'Project & Architecture', intent: 'Analyzing project decisions, architecture, and engineering outcomes' };
   }
-  if (lower.includes('resume') || lower.includes('background') || lower.includes('yourself') || lower.includes('walk me through') || lower.includes('experience at') || lower.includes('tell me about you')) {
-    return { category: 'Resume', intent: 'Candidate background overview and career trajectory' };
+  if (lower.includes('resume') || lower.includes('background') || lower.includes('yourself') || lower.includes('walk me through') || lower.includes('experience at') || lower.includes('tell me about you') || lower.includes('career')) {
+    return { category: 'Experience & Background', intent: 'Candidate background overview, career progression, and strengths' };
   }
-  if (lower.includes('tell me about a time') || lower.includes('conflict') || lower.includes('disagree') || lower.includes('challenge') || lower.includes('mistake') || lower.includes('failure') || lower.includes('weakness') || lower.includes('proudest')) {
-    return { category: 'Behavioral', intent: 'Assessing soft skills, problem-solving, and behavioral adaptability' };
+  if (lower.includes('tell me about a time') || lower.includes('conflict') || lower.includes('disagree') || lower.includes('challenge') || lower.includes('mistake') || lower.includes('failure') || lower.includes('weakness') || lower.includes('proudest') || lower.includes('situation')) {
+    return { category: 'Behavioral & Situational', intent: 'Assessing soft skills, problem-solving, and collaboration' };
   }
-  if (lower.includes('code') || lower.includes('algorithm') || lower.includes('complexity') || lower.includes('time complexity') || lower.includes('data structure') || lower.includes('implement') || lower.includes('function') || lower.includes('array') || lower.includes('binary tree') || lower.includes('dynamic programming') || lower.includes('polymorphism') || lower.includes('inheritance')) {
-    return { category: 'Coding', intent: 'Live coding logic, OOP principles, and algorithmic patterns' };
+  if (lower.includes('code') || lower.includes('algorithm') || lower.includes('complexity') || lower.includes('time complexity') || lower.includes('data structure') || lower.includes('implement') || lower.includes('function') || lower.includes('array') || lower.includes('binary tree') || lower.includes('dynamic programming') || lower.includes('leetcode')) {
+    return { category: 'Coding & Algorithms', intent: 'Algorithmic approach, data structures, and implementation logic' };
   }
   if (lower.includes('salary') || lower.includes('why this company') || lower.includes('why us') || lower.includes('notice period') || lower.includes('relocate') || lower.includes('culture') || lower.includes('long term') || lower.includes('where do you see yourself')) {
-    return { category: 'HR', intent: 'Company fit, logistical readiness, and motivation' };
+    return { category: 'HR & Culture Fit', intent: 'Company alignment, role motivation, and logistical readiness' };
   }
-  if (lower.includes('react') || lower.includes('state') || lower.includes('hook') || lower.includes('typescript') || lower.includes('database') || lower.includes('sql') || lower.includes('nosql') || lower.includes('async') || lower.includes('api') || lower.includes('rest') || lower.includes('graphql') || lower.includes('docker') || lower.includes('kubernetes') || lower.includes('microservice') || lower.includes('system design') || lower.includes('cache') || lower.includes('redis') || lower.includes('security') || lower.includes('difference between') || lower.includes('how does')) {
-    return { category: 'Technical', intent: 'Evaluating technical domain mastery, tools, and conceptual depth' };
+  if (lower.includes('system design') || lower.includes('scale') || lower.includes('microservice') || lower.includes('load balancer') || lower.includes('cache') || lower.includes('sharding') || lower.includes('kafka') || lower.includes('queue') || lower.includes('latency') || lower.includes('throughput')) {
+    return { category: 'System Design', intent: 'Distributed systems, scalability patterns, and architectural trade-offs' };
+  }
+  if (lower.includes('react') || lower.includes('state') || lower.includes('hook') || lower.includes('typescript') || lower.includes('database') || lower.includes('sql') || lower.includes('nosql') || lower.includes('async') || lower.includes('api') || lower.includes('rest') || lower.includes('graphql') || lower.includes('docker') || lower.includes('kubernetes') || lower.includes('difference between') || lower.includes('how does') || lower.includes('what is') || lower.includes('explain')) {
+    return { category: 'Technical Concepts', intent: 'Technical concept clarity, mechanics, and domain principles' };
+  }
+  if (/^(why|what did you|how did you|which one|it\b|that\b|this\b)/i.test(lower)) {
+    return { category: 'Contextual Follow-up', intent: 'Deep-dive inquiry into preceding conversation context' };
   }
   
-  return { category: 'General', intent: 'General interview inquiry and dialogue' };
+  return { category: 'General Interview Inquiry', intent: 'General domain inquiry and interview dialogue' };
 }
 
 /**
- * Streams answer generation using Gemini SDK with low-latency model cascade.
+ * Streams answer generation using Gemini SDK with low-latency model cascade and multi-turn context.
  */
 export async function streamAnswerGeneration(
   options: GenerateAnswerOptions,
@@ -158,26 +185,30 @@ export async function streamAnswerGeneration(
   const classification = classifyQuestion(question);
   const systemInstruction = buildSystemInstruction(profile);
 
-  // Build compact conversation turns
+  // Build full multi-turn conversation context (up to last 6 turns for pronoun & topic resolution)
   const contents: Array<{ role: 'user' | 'model'; parts: [{ text: string }] }> = [];
+  const recentHistory = conversationHistory.slice(-6);
 
-  // Limit conversation history to the last 4 turns for low latency and compact context
-  const recentHistory = conversationHistory.slice(-4);
-  for (const turn of recentHistory) {
-    contents.push({
-      role: turn.role === 'interviewer' ? 'user' : 'model',
-      parts: [{ text: turn.text }],
-    });
+  for (const item of recentHistory) {
+    if ((item as any).question && (item as any).answer) {
+      contents.push({ role: 'user', parts: [{ text: (item as any).question }] });
+      contents.push({ role: 'model', parts: [{ text: (item as any).answer }] });
+    } else if (item.role && item.text) {
+      contents.push({
+        role: item.role === 'interviewer' || (item.role as any) === 'user' ? 'user' : 'model',
+        parts: [{ text: item.text }],
+      });
+    }
   }
 
   // Current turn with specific style modifier
   let promptText = question;
   if (style === 'detailed') {
-    promptText += '\n[Instruction: Provide a comprehensive technical response with architectural reasoning in 4-5 sentences.]';
+    promptText += '\n[Guidance: Provide a thorough, direct explanation with a concrete example or code where helpful, concise enough to speak naturally.]';
   } else if (style === 'bullet') {
-    promptText += '\n[Instruction: Provide a concise opening sentence followed by 2-3 clear, impactful bullet points.]';
+    promptText += '\n[Guidance: Provide a direct opening statement followed by 2-3 crisp bullet points.]';
   } else {
-    promptText += '\n[Instruction: Keep answer concise, natural, and directly speakable in 2-3 sentences.]';
+    promptText += '\n[Guidance: Answer directly, accurately, and naturally. If technical, include a small example if useful. If coding, outline approach and code. If about candidate, speak in first person using dossier.]';
   }
 
   contents.push({
@@ -185,7 +216,7 @@ export async function streamAnswerGeneration(
     parts: [{ text: promptText }],
   });
 
-  const candidateModels = ['gemini-3.1-flash-lite', 'gemini-flash-latest', 'gemini-3.8-flash'];
+  const candidateModels = ['gemini-2.0-flash', 'gemini-2.5-flash', 'gemini-2.0-flash-lite', 'gemini-1.5-flash'];
   let lastError: any = null;
   const activeAi = options.customApiKey?.trim()
     ? new GoogleGenAI({
@@ -196,14 +227,21 @@ export async function streamAnswerGeneration(
 
   for (const modelName of candidateModels) {
     try {
+      const config: any = {
+        systemInstruction: systemInstruction,
+        temperature: 0.4,
+        topP: 0.9,
+        maxOutputTokens: 380,
+      };
+
+      if (modelName === 'gemini-2.5-flash') {
+        config.thinkingConfig = { thinkingBudget: 0 };
+      }
+
       const responseStream = await activeAi.models.generateContentStream({
         model: modelName,
         contents: contents,
-        config: {
-          systemInstruction: systemInstruction,
-          temperature: 0.6,
-          topP: 0.9,
-        },
+        config: config,
       });
 
       let fullAnswer = '';
@@ -217,7 +255,7 @@ export async function streamAnswerGeneration(
 
       if (fullAnswer.trim()) {
         return {
-          text: fullAnswer,
+          text: fullAnswer.trim(),
           category: classification.category,
           intent: classification.intent,
         };
@@ -225,13 +263,13 @@ export async function streamAnswerGeneration(
     } catch (err: any) {
       console.warn(`Model ${modelName} stream attempt error:`, err?.message || err);
       lastError = err;
-      // Retry next candidate model on 503 or quota spike
       continue;
     }
   }
 
   throw lastError || new Error('Failed to generate answer from candidate models.');
 }
+
 
 /**
  * Creates a short-lived ephemeral token for client-side Gemini Live API WebSocket access.

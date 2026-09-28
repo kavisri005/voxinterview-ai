@@ -154,7 +154,7 @@ export default function App() {
           setStatus('UNDERSTANDING...');
           break;
         case 'GENERATING':
-          setStatus('GENERATING...');
+          setStatus('ANALYZING...');
           break;
         case 'ANSWER_READY':
           setStatus('ANSWER READY');
@@ -322,9 +322,10 @@ export default function App() {
           classes: 'bg-amber-500/15 text-amber-300 border-amber-500/30',
           dot: 'bg-amber-400',
         };
+      case 'ANALYZING...':
       case 'GENERATING...':
         return {
-          label: 'GENERATING TEXT ANSWER...',
+          label: 'ANALYZING...',
           classes: 'bg-indigo-500/20 text-indigo-300 border-indigo-500/40 animate-pulse',
           dot: 'bg-indigo-400 animate-spin',
         };
@@ -349,17 +350,26 @@ export default function App() {
   const getCategoryBadgeClass = (cat: QuestionCategory) => {
     switch (cat) {
       case 'Technical':
+      case 'Technical Concepts':
         return 'bg-blue-500/20 text-blue-300 border-blue-500/40';
       case 'Project':
+      case 'Project & Architecture':
+      case 'System Design':
         return 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40';
       case 'Behavioral':
+      case 'Behavioral & Situational':
         return 'bg-amber-500/20 text-amber-300 border-amber-500/40';
       case 'Coding':
+      case 'Coding & Algorithms':
         return 'bg-purple-500/20 text-purple-300 border-purple-500/40';
       case 'HR':
+      case 'HR & Culture Fit':
         return 'bg-rose-500/20 text-rose-300 border-rose-500/40';
       case 'Resume':
+      case 'Experience & Background':
         return 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40';
+      case 'Contextual Follow-up':
+        return 'bg-violet-500/20 text-violet-300 border-violet-500/40';
       default:
         return 'bg-slate-700/40 text-slate-300 border-slate-600';
     }

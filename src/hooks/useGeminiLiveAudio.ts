@@ -50,51 +50,36 @@ export function useGeminiLiveAudio(options: UseGeminiLiveAudioOptions) {
   const silenceTimerRef = useRef<NodeJS.Timeout | null>(null);
   const lastSpeechTimeRef = useRef<number>(0);
 
-  // Builds prompt string representing the candidate's actual dossier
+  // Latency timestamps for all 6 required stages
+  const lastMicCaptureTimeRef = useRef<number>(0);
+  const lastMicLogTimeRef = useRef<number>(0);
+  const lastTranscriptChunkTimeRef = useRef<number>(0);
+  const turnCompleteTimeRef = useRef<number>(0);
+  const answerGenStartTimeRef = useRef<number>(0);
+  const firstAnswerTokenTimeRef = useRef<number>(0);
+  const answerCompleteTimeRef = useRef<number>(0);
+
+  // Builds prompt for Gemini Live API audio understanding & context
   const buildSystemInstruction = useCallback(() => {
     const profile = optionsRef.current.candidateProfile;
-    const history = optionsRef.current.conversationHistory;
-
-    let dossier = 'No specific profile provided. Answer as an articulate, competent software engineer.';
+    let dossier = 'No specific candidate profile provided.';
     if (profile && (profile.name || profile.technicalSkills?.length || profile.projects?.length)) {
-      dossier = `
-CANDIDATE DOSSIER (Ground truth - NEVER invent experiences, skills, or projects):
-- Name: ${profile.name || 'Candidate'}
-- Target Role: ${profile.targetRole || 'Software Engineer'}
-- Education: ${profile.degree || 'Degree'} at ${profile.college || 'University'} (${profile.gradYear || ''})
-- Summary: ${profile.summary || 'N/A'}
-- Core Skills: ${(profile.technicalSkills || []).join(', ')}
-- Languages: ${(profile.programmingLanguages || []).join(', ')}
-- Frameworks & Tools: ${(profile.frameworks || []).concat(profile.toolsDatabases || []).join(', ')}
-- Projects:
-${(profile.projects || [])
-  .map(
-    (p, idx) =>
-      `  [Project ${idx + 1}] "${p.title}" (Tech: ${p.techStack}): ${p.description} ${p.highlights ? `Key Achievements: ${p.highlights}` : ''}`
-  )
-  .join('\n')}
-- Experience:
-${(profile.experience || []).map((e) => `  - ${e.role} at ${e.company} (${e.period}): ${e.description}`).join('\n')}
-- Certifications: ${(profile.certifications || []).join(', ')}
-- Additional Info: ${profile.otherInfo || 'N/A'}
-`;
+      const skills = (profile.technicalSkills || []).slice(0, 10).join(', ');
+      const projects = (profile.projects || [])
+        .slice(0, 3)
+        .map((p) => `"${p.title}" (${p.techStack}): ${p.description}`)
+        .join('; ');
+      dossier = `CANDIDATE DOSSIER: Name: ${profile.name || 'Candidate'} | Role: ${profile.targetRole || 'Software Engineer'} | Skills: ${skills} | Projects: ${projects}`;
     }
 
-    const recentHistoryText = history.slice(-4).map(
-      (turn) => `Interviewer: "${turn.question}"\nCandidate: "${turn.answer}"`
-    ).join('\n\n');
+    return `You are VoxInterview AI, an elite real-time interview co-pilot and general-purpose question answering agent.
+1. Answer ANY interview question directly and accurately—technical, coding, system design, behavioral, project, or general.
+2. If about the candidate or their projects, answer in natural first-person ("I", "in my project...") strictly using the dossier.
+3. If technical, conceptual, or general, use your full model knowledge to explain clearly.
+4. Maintain conversation context across turns. Resolve follow-ups and pronouns ("it", "that", "why did you choose it?") naturally.
+5. Keep answers speakable and concise for live interviews. Never reject questions as unknown or unsupported.
 
-    return `You are a real-time interview co-pilot whisperer for a candidate sitting in an active live interview.
-Your role:
-1. UNDERSTAND THE INTERVIEWER'S SPOKEN QUESTION accurately from the audio stream.
-2. Produce a natural, confident, direct first-person spoken answer ("I", "in my experience", "in my project...") that the candidate can read aloud immediately.
-3. STRICT TRUTH: NEVER invent companies, degrees, metrics, or technologies not in the dossier. Draw strictly from their real projects and skills.
-4. LENGTH & FORMAT: Keep the spoken answer between 2 to 4 punchy sentences (around 50-80 words). Do not include stage directions like "(laughs)". Text only, no markdown headers.
-5. CONVERSATION CONTEXT: If the interviewer asks follow-ups, maintain context seamlessly.
-
-${dossier}
-
-${recentHistoryText ? `RECENT CONVERSATION HISTORY:\n${recentHistoryText}` : ''}`;
+${dossier}`;
   }, []);
 
   // Streams first-person answer for a finalized question via SSE (/api/answer)
@@ -109,11 +94,45 @@ ${recentHistoryText ? `RECENT CONVERSATION HISTORY:\n${recentHistoryText}` : ''}
     setGeneratedAnswer('');
     answerAccumulatorRef.current = '';
 
+    const genStartTime = Date.now();
+    answerGenStartTimeRef.current = genStartTime;
+    console.log(`[VOX TIMING] [${new Date(genStartTime).toISOString()}] ANSWER GENERATION STARTED (status: ANALYZING... question: "${cleanQ}")`);
+
     if (answerAbortControllerRef.current) {
       answerAbortControllerRef.current.abort();
     }
     const abortController = new AbortController();
     answerAbortControllerRef.current = abortController;
+
+    // Send rich candidate information grounded in dossier
+    const profile = optionsRef.current.candidateProfile;
+    const minimalProfile = profile ? {
+      name: profile.name || 'Candidate',
+      targetRole: profile.targetRole || 'Software Engineer',
+      technicalSkills: (profile.technicalSkills || []).slice(0, 10),
+      programmingLanguages: (profile.programmingLanguages || []).slice(0, 6),
+      frameworks: (profile.frameworks || []).slice(0, 6),
+      toolsDatabases: (profile.toolsDatabases || []).slice(0, 6),
+      projects: (profile.projects || []).slice(0, 3).map((p) => ({
+        title: p.title,
+        techStack: p.techStack,
+        description: p.description ? p.description.slice(0, 120) : '',
+        highlights: p.highlights ? p.highlights.slice(0, 100) : '',
+      })),
+      experience: (profile.experience || []).slice(0, 2).map((e) => ({
+        role: e.role,
+        company: e.company,
+        period: e.period,
+        description: e.description ? e.description.slice(0, 100) : '',
+      })),
+      summary: profile.summary ? profile.summary.slice(0, 150) : '',
+    } : undefined;
+
+    // Send last 6 conversation turns for complete follow-up and pronoun resolution
+    const conversationTurns = (optionsRef.current.conversationHistory || []).slice(-6).map((turn) => ({
+      question: turn.question || '',
+      answer: (turn.answer || '').slice(0, 250),
+    }));
 
     try {
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -127,8 +146,8 @@ ${recentHistoryText ? `RECENT CONVERSATION HISTORY:\n${recentHistoryText}` : ''}
         signal: abortController.signal,
         body: JSON.stringify({
           question: cleanQ,
-          candidateProfile: optionsRef.current.candidateProfile,
-          conversationHistory: optionsRef.current.conversationHistory,
+          candidateProfile: minimalProfile,
+          conversationHistory: conversationTurns,
           style: optionsRef.current.answerStyle,
         }),
       });
@@ -145,6 +164,7 @@ ${recentHistoryText ? `RECENT CONVERSATION HISTORY:\n${recentHistoryText}` : ''}
       let streamBuffer = '';
       let accumulated = '';
       let metadata: any = null;
+      let firstTokenReceived = false;
 
       while (true) {
         const { done, value } = await reader.read();
@@ -174,13 +194,25 @@ ${recentHistoryText ? `RECENT CONVERSATION HISTORY:\n${recentHistoryText}` : ''}
             if (eventType === 'meta') {
               metadata = data;
             } else if (eventType === 'chunk' && data.chunk) {
+              if (!firstTokenReceived) {
+                firstTokenReceived = true;
+                const firstTokenTime = Date.now();
+                firstAnswerTokenTimeRef.current = firstTokenTime;
+                const ttft = turnCompleteTimeRef.current > 0 ? firstTokenTime - turnCompleteTimeRef.current : firstTokenTime - genStartTime;
+                console.log(`[VOX TIMING] [${new Date(firstTokenTime).toISOString()}] FIRST ANSWER TOKEN RECEIVED: "${data.chunk}" (TTFT: ${ttft}ms from turn complete)`);
+              }
               accumulated += data.chunk;
               console.log('[Gemini Live] Gemini response text:', data.chunk);
               setGeneratedAnswer(accumulated);
               optionsRef.current.onAnswerChunk?.(data.chunk, accumulated);
             } else if (eventType === 'end') {
               const finalAns = data.fullAnswer || accumulated;
-              console.log('[Gemini Live] Gemini response text:', finalAns);
+              const ansCompleteTime = Date.now();
+              answerCompleteTimeRef.current = ansCompleteTime;
+              const totalLatency = turnCompleteTimeRef.current > 0 ? ansCompleteTime - turnCompleteTimeRef.current : ansCompleteTime - genStartTime;
+              const wordCount = finalAns.trim().split(/\s+/).filter(Boolean).length;
+              console.log(`[VOX TIMING] [${new Date(ansCompleteTime).toISOString()}] ANSWER COMPLETE: "${finalAns.slice(0, 60)}..." (Total latency: ${totalLatency}ms from turn complete, words: ${wordCount})`);
+
               setGeneratedAnswer(finalAns);
               optionsRef.current.onAnswerComplete?.(finalAns, {
                 category: data.category || metadata?.category,
@@ -209,16 +241,20 @@ ${recentHistoryText ? `RECENT CONVERSATION HISTORY:\n${recentHistoryText}` : ''}
   }, []);
 
   // Handles turn completion detected by Gemini VAD or silence detector
-  const handleVadTurnComplete = useCallback(async () => {
+  const handleVadTurnComplete = useCallback(async (source: 'gemini-vad' | 'silence-detector' = 'gemini-vad') => {
     // 1. Finalize the complete transcript
     const finalQuestion = (
       finalizedSegmentsRef.current + ' ' + currentInterimRef.current
     ).trim() || questionAccumulatorRef.current.trim();
 
     if (!finalQuestion || finalQuestion.split(/\s+/).length < 2) return;
+    if (isGeneratingRef.current) return;
 
-    console.log('[Gemini Live] turn complete');
-    // 2. Show the complete question
+    const turnTime = Date.now();
+    turnCompleteTimeRef.current = turnTime;
+    console.log(`[VOX TIMING] [${new Date(turnTime).toISOString()}] TURN COMPLETE (source: ${source})`);
+
+    // 2. Show the complete question immediately
     setDetectedQuestion(finalQuestion);
     optionsRef.current.onQuestionUnderstood?.(finalQuestion);
 
@@ -227,7 +263,9 @@ ${recentHistoryText ? `RECENT CONVERSATION HISTORY:\n${recentHistoryText}` : ''}
       setIsGenerating(false);
       isGeneratingRef.current = false;
       const finalAnswer = answerAccumulatorRef.current.trim();
-      console.log('[Gemini Live] Gemini response text:', finalAnswer);
+      const ansTime = Date.now();
+      answerCompleteTimeRef.current = ansTime;
+      console.log(`[VOX TIMING] [${new Date(ansTime).toISOString()}] ANSWER COMPLETE: "${finalAnswer}"`);
       optionsRef.current.onAnswerComplete?.(finalAnswer);
       optionsRef.current.onStatusChange?.('ANSWER_READY');
       vadFinalizedRef.current = true;
@@ -237,9 +275,7 @@ ${recentHistoryText ? `RECENT CONVERSATION HISTORY:\n${recentHistoryText}` : ''}
       return;
     }
 
-    // 3. Send the question to Gemini
-    // 4. Generate a concise first-person interview answer
-    // 5. Stream the answer into the "AI Suggested Answer" section
+    // 3. Immediately start generating the answer
     await streamAnswerForQuestion(finalQuestion);
   }, [streamAnswerForQuestion]);
 
@@ -338,6 +374,13 @@ ${recentHistoryText ? `RECENT CONVERSATION HISTORY:\n${recentHistoryText}` : ''}
             },
             inputAudioTranscription: {},
             outputAudioTranscription: {},
+            realtimeInputConfig: {
+              automaticActivityDetection: {
+                disabled: false,
+                endOfSpeechSensitivity: 'END_SENSITIVITY_HIGH',
+                silenceDurationMs: 600,
+              },
+            },
             systemInstruction: {
               parts: [{ text: buildSystemInstruction() }],
             },
@@ -395,14 +438,18 @@ ${recentHistoryText ? `RECENT CONVERSATION HISTORY:\n${recentHistoryText}` : ''}
 
           // In-progress words updated in real time as the interviewer speaks
           if (interim && typeof interim.text === 'string' && interim.text.trim()) {
-            console.log('[Gemini Live] input transcription received');
+            const now = Date.now();
+            lastTranscriptChunkTimeRef.current = now;
+            console.log(`[VOX TIMING] [${new Date(now).toISOString()}] TRANSCRIPT CHUNK RECEIVED: "${interim.text.trim()}"`);
             currentInterimRef.current = interim.text.trim();
             transcriptUpdated = true;
           }
 
           // Finalized speech segment
           if (inputTx && typeof inputTx.text === 'string' && inputTx.text.trim()) {
-            console.log('[Gemini Live] input transcription received');
+            const now = Date.now();
+            lastTranscriptChunkTimeRef.current = now;
+            console.log(`[VOX TIMING] [${new Date(now).toISOString()}] TRANSCRIPT CHUNK RECEIVED: "${inputTx.text.trim()}"`);
             if (inputTx.finished) {
               finalizedSegmentsRef.current = (
                 finalizedSegmentsRef.current + ' ' + inputTx.text.trim()
@@ -421,7 +468,6 @@ ${recentHistoryText ? `RECENT CONVERSATION HISTORY:\n${recentHistoryText}` : ''}
             ).trim();
 
             if (liveQuestion) {
-              console.log('[Gemini Live] input transcription text:', liveQuestion);
               questionAccumulatorRef.current = liveQuestion;
               setDetectedQuestion(liveQuestion);
               optionsRef.current.onQuestionUnderstood?.(liveQuestion);
@@ -441,7 +487,7 @@ ${recentHistoryText ? `RECENT CONVERSATION HISTORY:\n${recentHistoryText}` : ''}
           // 4. VAD Turn Complete (Interviewer finished speaking)
           const turnComplete = serverContent.turnComplete || serverContent.turn_complete;
           if (turnComplete) {
-            handleVadTurnComplete();
+            handleVadTurnComplete('gemini-vad');
           }
 
           // 5. Interruption signal
@@ -562,19 +608,16 @@ ${recentHistoryText ? `RECENT CONVERSATION HISTORY:\n${recentHistoryText}` : ''}
             clearTimeout(silenceTimerRef.current);
             silenceTimerRef.current = null;
           }
-        } else if (lastSpeechTimeRef.current > 0 && Date.now() - lastSpeechTimeRef.current > 1200) {
-          // 1.2s silence detected after speech
+        } else if (lastSpeechTimeRef.current > 0 && Date.now() - lastSpeechTimeRef.current > 600) {
+          // 600ms silence detected after speech (500-700ms window)
           const hasUnfinishedQuestion =
             (finalizedSegmentsRef.current || currentInterimRef.current || questionAccumulatorRef.current) &&
             !vadFinalizedRef.current &&
             !isGeneratingRef.current;
 
-          if (!silenceTimerRef.current && hasUnfinishedQuestion) {
-            silenceTimerRef.current = setTimeout(() => {
-              if (isRecordingRef.current && !vadFinalizedRef.current && !isGeneratingRef.current) {
-                handleVadTurnComplete();
-              }
-            }, 200);
+          if (hasUnfinishedQuestion) {
+            lastSpeechTimeRef.current = 0; // prevent repeated triggers
+            handleVadTurnComplete('silence-detector');
           }
         }
 
@@ -595,6 +638,14 @@ ${recentHistoryText ? `RECENT CONVERSATION HISTORY:\n${recentHistoryText}` : ''}
         // Convert to 16kHz 16-bit mono PCM
         const pcm16 = downsampleToPcm16(inputData, audioCtx.sampleRate, 16000);
 
+        // Track microphone audio captured timestamp
+        const now = Date.now();
+        lastMicCaptureTimeRef.current = now;
+        if (now - lastMicLogTimeRef.current > 1500) {
+          lastMicLogTimeRef.current = now;
+          console.log(`[VOX TIMING] [${new Date(now).toISOString()}] MICROPHONE AUDIO CAPTURED (16kHz PCM streaming active)`);
+        }
+
         // Send real-time audio chunk directly over WebSocket
         if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN && isWsReadyRef.current) {
           const base64Data = arrayBufferToBase64(pcm16);
@@ -608,9 +659,6 @@ ${recentHistoryText ? `RECENT CONVERSATION HISTORY:\n${recentHistoryText}` : ''}
           };
           wsRef.current.send(JSON.stringify(chunkMsg));
           chunksSentCountRef.current++;
-          if (chunksSentCountRef.current % 12 === 1) {
-            console.log('[Gemini Live] audio chunk sent');
-          }
         }
       };
 
