@@ -214,15 +214,16 @@ export async function streamAnswerGeneration(
 
 /**
  * Creates a short-lived ephemeral token for client-side Gemini Live API WebSocket access.
- * Keeps permanent server API key secure.
+ * Keeps permanent server API key secure and returns strictly the token.
  */
-export async function createLiveSessionToken(): Promise<{ token: string; endpoint: string }> {
-  if (!apiKey) {
+export async function createLiveSessionToken(customApiKey?: string): Promise<{ token: string }> {
+  const activeKey = customApiKey?.trim() || process.env.GEMINI_API_KEY || apiKey;
+  if (!activeKey) {
     throw new Error('GEMINI_API_KEY is not configured on the server');
   }
 
   const client = new GoogleGenAI({
-    apiKey: apiKey,
+    apiKey: activeKey,
     httpOptions: { apiVersion: 'v1alpha' },
   });
 
@@ -238,8 +239,6 @@ export async function createLiveSessionToken(): Promise<{ token: string; endpoin
 
   return {
     token: token.name || '',
-    endpoint:
-      'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained',
   };
 }
 

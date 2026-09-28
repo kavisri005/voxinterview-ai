@@ -226,14 +226,21 @@ ${recentHistoryText ? `RECENT CONVERSATION HISTORY:\n${recentHistoryText}` : ''}
     let wsUrl = '';
     let token = '';
 
-    // 1. Try to get short-lived ephemeral token from backend
+    // 1. Try to get short-lived ephemeral token from backend (minimal request, no profile/audio in body)
     try {
-      const res = await fetch('/api/live-token', { method: 'POST' });
+      const headers: Record<string, string> = {};
+      if (optionsRef.current.customApiKey?.trim()) {
+        headers['x-gemini-key'] = optionsRef.current.customApiKey.trim();
+      }
+      const res = await fetch('/api/live-token', {
+        method: 'POST',
+        headers,
+      });
       if (res.ok) {
         const data = await res.json();
         if (data.token) {
           token = data.token;
-          wsUrl = `${data.endpoint || 'wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained'}?access_token=${token}`;
+          wsUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained?access_token=${encodeURIComponent(token)}`;
         }
       }
     } catch (e) {
@@ -241,9 +248,9 @@ ${recentHistoryText ? `RECENT CONVERSATION HISTORY:\n${recentHistoryText}` : ''}
     }
 
     // 2. If no ephemeral token, check custom key from Settings
-    if (!wsUrl && optionsRef.current.customApiKey) {
+    if (!wsUrl && optionsRef.current.customApiKey?.trim()) {
       const key = optionsRef.current.customApiKey.trim();
-      wsUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=${key}`;
+      wsUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=${encodeURIComponent(key)}`;
     }
 
     // If no direct WebSocket credentials, the real-time audio buffer will use /api/audio-answer directly

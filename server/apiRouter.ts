@@ -110,13 +110,18 @@ apiRouter.post('/answer', async (req: Request, res: Response) => {
 });
 
 // Create short-lived ephemeral token for Gemini Live API WebSocket access
-apiRouter.post('/live-token', async (_req: Request, res: Response) => {
+apiRouter.all('/live-token', async (req: Request, res: Response) => {
   try {
-    const session = await createLiveSessionToken();
+    const clientKey =
+      (req.headers['x-gemini-key'] as string) ||
+      (req.headers['authorization'] ? (req.headers['authorization'] as string).replace(/^Bearer\s+/i, '') : '') ||
+      (typeof req.query.key === 'string' ? req.query.key : '') ||
+      (req.body && typeof req.body.apiKey === 'string' ? req.body.apiKey : '');
+
+    const session = await createLiveSessionToken(clientKey);
+    // Return only the short-lived token and minimal required configuration
     res.json({
-      status: 'ok',
       token: session.token,
-      endpoint: session.endpoint,
     });
   } catch (err: any) {
     console.error('Error generating ephemeral token:', err);
