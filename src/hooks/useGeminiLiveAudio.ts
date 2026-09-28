@@ -45,6 +45,7 @@ export function useGeminiLiveAudio(options: UseGeminiLiveAudioOptions) {
   const questionAccumulatorRef = useRef<string>('');
   const answerAccumulatorRef = useRef<string>('');
   const vadFinalizedRef = useRef<boolean>(false);
+  const chunksSentCountRef = useRef<number>(0);
 
   const silenceTimerRef = useRef<NodeJS.Timeout | null>(null);
   const lastSpeechTimeRef = useRef<number>(0);
@@ -174,10 +175,12 @@ ${recentHistoryText ? `RECENT CONVERSATION HISTORY:\n${recentHistoryText}` : ''}
               metadata = data;
             } else if (eventType === 'chunk' && data.chunk) {
               accumulated += data.chunk;
+              console.log('[Gemini Live] Gemini response text:', data.chunk);
               setGeneratedAnswer(accumulated);
               optionsRef.current.onAnswerChunk?.(data.chunk, accumulated);
             } else if (eventType === 'end') {
               const finalAns = data.fullAnswer || accumulated;
+              console.log('[Gemini Live] Gemini response text:', finalAns);
               setGeneratedAnswer(finalAns);
               optionsRef.current.onAnswerComplete?.(finalAns, {
                 category: data.category || metadata?.category,
@@ -214,15 +217,17 @@ ${recentHistoryText ? `RECENT CONVERSATION HISTORY:\n${recentHistoryText}` : ''}
 
     if (!finalQuestion || finalQuestion.split(/\s+/).length < 2) return;
 
+    console.log('[Gemini Live] turn complete');
     // 2. Show the complete question
     setDetectedQuestion(finalQuestion);
     optionsRef.current.onQuestionUnderstood?.(finalQuestion);
 
-    // If the Live WebSocket modelTurn already streamed an answer, complete it
+    // If outputAudioTranscription already streamed an answer, complete it
     if (answerAccumulatorRef.current.trim()) {
       setIsGenerating(false);
       isGeneratingRef.current = false;
       const finalAnswer = answerAccumulatorRef.current.trim();
+      console.log('[Gemini Live] Gemini response text:', finalAnswer);
       optionsRef.current.onAnswerComplete?.(finalAnswer);
       optionsRef.current.onStatusChange?.('ANSWER_READY');
       vadFinalizedRef.current = true;
@@ -238,20 +243,20 @@ ${recentHistoryText ? `RECENT CONVERSATION HISTORY:\n${recentHistoryText}` : ''}
     await streamAnswerForQuestion(finalQuestion);
   }, [streamAnswerForQuestion]);
 
-  // Connects WebSocket to Gemini Live API
-  const connectGeminiLiveWebSocket = useCallback(async () => {
+  // Connects WebSocket to Gemini Live API and verifies setupComplete
+  const connectGeminiLiveWebSocket = useCallback(async (): Promise<void> => {
     isWsReadyRef.current = false;
     answerAccumulatorRef.current = '';
     questionAccumulatorRef.current = '';
     finalizedSegmentsRef.current = '';
     currentInterimRef.current = '';
     vadFinalizedRef.current = false;
+    chunksSentCountRef.current = 0;
 
     let wsUrl = '';
     let token = '';
-    let serverErrorMessage = '';
 
-    // 1. Try to get short-lived ephemeral token from backend (minimal request, no profile/audio in body)
+    // 1. Request short-lived ephemeral token from backend
     try {
       const headers: Record<string, string> = {};
       if (optionsRef.current.customApiKey?.trim()) {
@@ -273,43 +278,66 @@ ${recentHistoryText ? `RECENT CONVERSATION HISTORY:\n${recentHistoryText}` : ''}
         }
       } else {
         const errData = await res.json().catch(() => ({}));
-        serverErrorMessage = errData?.error || `Server returned ${res.status}`;
-        console.warn('Backend live-token error:', serverErrorMessage);
+        const serverErrorMessage = errData?.error || `Server returned ${res.status}`;
+        throw new Error(serverErrorMessage);
       }
     } catch (e: any) {
-      serverErrorMessage = e?.message || 'Failed to reach /api/live-token';
-      console.warn('Backend live-token endpoint unavailable, checking fallback', e);
+      if (!optionsRef.current.customApiKey?.trim()) {
+        throw new Error(e?.message || 'Failed to authenticate with Gemini Live API');
+      }
     }
 
-    // 2. If no ephemeral token, check custom key from Settings
+    // Fallback to custom key if configured
     if (!wsUrl && optionsRef.current.customApiKey?.trim()) {
       const key = optionsRef.current.customApiKey.trim();
       wsUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=${encodeURIComponent(key)}`;
     }
 
     if (!wsUrl) {
-      const displayError = serverErrorMessage || 'GEMINI_API_KEY is not configured on the production server.';
-      console.error('Gemini Live session auth error:', displayError);
-      optionsRef.current.onError?.(displayError);
-      return;
+      throw new Error('GEMINI_API_KEY is not configured on the production server. Please add GEMINI_API_KEY to Vercel environment variables or enter it in Settings.');
     }
 
-    try {
+    // Return a Promise that verifies WebSocket connection and awaits setupComplete
+    return new Promise<void>((resolve, reject) => {
+      let isSettled = false;
+      const safeResolve = () => {
+        if (!isSettled) {
+          isSettled = true;
+          resolve();
+        }
+      };
+      const safeReject = (err: Error) => {
+        if (!isSettled) {
+          isSettled = true;
+          reject(err);
+        }
+      };
+
+      if (wsRef.current) {
+        try {
+          wsRef.current.close();
+        } catch {}
+        wsRef.current = null;
+      }
+
       const ws = new WebSocket(wsUrl);
+      ws.binaryType = 'arraybuffer';
       wsRef.current = ws;
 
       ws.onopen = () => {
-        console.log('Gemini Live API WebSocket connected');
-        // Send initial setup message with TEXT response modality and inputAudioTranscription enabled
+        console.log('[Gemini Live] Live session connected');
+        // Gemini Live model setup with inputAudioTranscription enabled
+        // responseModalities is set to AUDIO for server handshake compatibility, while client handles strictly TEXT (no audio output/playback)
         const setupMessage = {
           setup: {
-            model: 'models/gemini-2.0-flash-exp',
+            model: 'models/gemini-3.1-flash-live-preview',
             generationConfig: {
-              responseModalities: ['TEXT'],
+              responseModalities: ['AUDIO'],
               temperature: 0.6,
               topP: 0.9,
             },
             inputAudioTranscription: {},
+            outputAudioTranscription: {},
             systemInstruction: {
               parts: [{ text: buildSystemInstruction() }],
             },
@@ -318,15 +346,26 @@ ${recentHistoryText ? `RECENT CONVERSATION HISTORY:\n${recentHistoryText}` : ''}
         ws.send(JSON.stringify(setupMessage));
       };
 
-      ws.onmessage = (event) => {
+      ws.onmessage = async (event) => {
         try {
-          const raw = typeof event.data === 'string' ? event.data : '';
+          let raw = '';
+          if (typeof event.data === 'string') {
+            raw = event.data;
+          } else if (event.data instanceof ArrayBuffer) {
+            raw = new TextDecoder('utf-8').decode(event.data);
+          } else if (event.data instanceof Blob) {
+            raw = await event.data.text();
+          } else if (event.data) {
+            raw = String(event.data);
+          }
           if (!raw) return;
+
           const msg = JSON.parse(raw);
 
-          // 1. Setup complete
+          // 1. Setup complete confirmation from Google Gemini Live API
           if (msg.setupComplete || msg.setup_complete) {
             isWsReadyRef.current = true;
+            safeResolve();
             optionsRef.current.onStatusChange?.('LISTENING');
             return;
           }
@@ -345,7 +384,7 @@ ${recentHistoryText ? `RECENT CONVERSATION HISTORY:\n${recentHistoryText}` : ''}
 
           let transcriptUpdated = false;
 
-          // If starting a new utterance after previous answer was finalized, clear old buffers
+          // Reset buffers if previous turn was finalized and new speech is detected
           if (vadFinalizedRef.current && (interim?.text || inputTx?.text)) {
             vadFinalizedRef.current = false;
             finalizedSegmentsRef.current = '';
@@ -356,12 +395,14 @@ ${recentHistoryText ? `RECENT CONVERSATION HISTORY:\n${recentHistoryText}` : ''}
 
           // In-progress words updated in real time as the interviewer speaks
           if (interim && typeof interim.text === 'string' && interim.text.trim()) {
+            console.log('[Gemini Live] input transcription received');
             currentInterimRef.current = interim.text.trim();
             transcriptUpdated = true;
           }
 
           // Finalized speech segment
           if (inputTx && typeof inputTx.text === 'string' && inputTx.text.trim()) {
+            console.log('[Gemini Live] input transcription received');
             if (inputTx.finished) {
               finalizedSegmentsRef.current = (
                 finalizedSegmentsRef.current + ' ' + inputTx.text.trim()
@@ -380,6 +421,7 @@ ${recentHistoryText ? `RECENT CONVERSATION HISTORY:\n${recentHistoryText}` : ''}
             ).trim();
 
             if (liveQuestion) {
+              console.log('[Gemini Live] input transcription text:', liveQuestion);
               questionAccumulatorRef.current = liveQuestion;
               setDetectedQuestion(liveQuestion);
               optionsRef.current.onQuestionUnderstood?.(liveQuestion);
@@ -387,18 +429,13 @@ ${recentHistoryText ? `RECENT CONVERSATION HISTORY:\n${recentHistoryText}` : ''}
             }
           }
 
-          // 3. Model text answer stream from WebSocket if emitted
-          const modelTurn = serverContent.modelTurn || serverContent.model_turn;
-          if (modelTurn?.parts) {
-            optionsRef.current.onStatusChange?.('GENERATING');
-            setIsGenerating(true);
-            for (const part of modelTurn.parts) {
-              if (part.text) {
-                answerAccumulatorRef.current += part.text;
-                setGeneratedAnswer(answerAccumulatorRef.current);
-                optionsRef.current.onAnswerChunk?.(part.text, answerAccumulatorRef.current);
-              }
-            }
+          // 3. Model text answer stream from WebSocket if output transcription is emitted
+          const outTx = serverContent.outputTranscription || serverContent.output_transcription;
+          if (outTx && typeof outTx.text === 'string' && outTx.text.trim()) {
+            console.log('[Gemini Live] Gemini response text:', outTx.text);
+            answerAccumulatorRef.current += outTx.text;
+            setGeneratedAnswer(answerAccumulatorRef.current);
+            optionsRef.current.onAnswerChunk?.(outTx.text, answerAccumulatorRef.current);
           }
 
           // 4. VAD Turn Complete (Interviewer finished speaking)
@@ -421,16 +458,31 @@ ${recentHistoryText ? `RECENT CONVERSATION HISTORY:\n${recentHistoryText}` : ''}
       };
 
       ws.onerror = (err) => {
-        console.warn('Gemini Live WebSocket notice:', err);
+        console.error('[Gemini Live] Live session error:', err);
+        safeReject(new Error('WebSocket connection error with Gemini Live API'));
       };
 
-      ws.onclose = () => {
-        console.log('Gemini Live WebSocket closed');
+      ws.onclose = (event) => {
+        console.log(`[Gemini Live] Live session error/close (code: ${event.code}, reason: ${event.reason || 'Closed'})`);
         isWsReadyRef.current = false;
+        if (!isSettled) {
+          safeReject(
+            new Error(
+              event.reason
+                ? `Gemini Live error: ${event.reason} (code ${event.code})`
+                : `Gemini Live connection closed before setup completed (code ${event.code})`
+            )
+          );
+        }
       };
-    } catch (e) {
-      console.warn('Failed to establish WebSocket to Gemini Live API:', e);
-    }
+
+      // 12-second safety timeout waiting for setupComplete
+      setTimeout(() => {
+        if (!isWsReadyRef.current && !isSettled) {
+          safeReject(new Error('Gemini Live session timed out waiting for setup confirmation'));
+        }
+      }, 12000);
+    });
   }, [buildSystemInstruction, handleVadTurnComplete]);
 
   // Start recording
@@ -443,14 +495,25 @@ ${recentHistoryText ? `RECENT CONVERSATION HISTORY:\n${recentHistoryText}` : ''}
     questionAccumulatorRef.current = '';
     answerAccumulatorRef.current = '';
     vadFinalizedRef.current = false;
-    isRecordingRef.current = true;
-    setIsListening(true);
+    chunksSentCountRef.current = 0;
+
     optionsRef.current.onStatusChange?.('CONNECTING');
 
-    // 1. Establish Gemini Live WebSocket connection
-    await connectGeminiLiveWebSocket();
+    // 1. Establish Gemini Live WebSocket connection and verify setupComplete
+    try {
+      await connectGeminiLiveWebSocket();
+    } catch (wsErr: any) {
+      console.error('[Gemini Live] Live session connection failure:', wsErr);
+      const errMsg = wsErr?.message || 'Failed to connect to Gemini Live API';
+      setErrorMessage(errMsg);
+      optionsRef.current.onError?.(errMsg);
+      optionsRef.current.onStatusChange?.('READY');
+      setIsListening(false);
+      isRecordingRef.current = false;
+      return;
+    }
 
-    // 2. Access mobile / desktop microphone
+    // 2. Access mobile / desktop microphone (ONLY after Gemini Live is confirmed connected)
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -462,6 +525,8 @@ ${recentHistoryText ? `RECENT CONVERSATION HISTORY:\n${recentHistoryText}` : ''}
       });
 
       mediaStreamRef.current = stream;
+      isRecordingRef.current = true;
+      setIsListening(true);
 
       const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
       const audioCtx = new AudioCtx();
@@ -535,15 +600,17 @@ ${recentHistoryText ? `RECENT CONVERSATION HISTORY:\n${recentHistoryText}` : ''}
           const base64Data = arrayBufferToBase64(pcm16);
           const chunkMsg = {
             realtimeInput: {
-              mediaChunks: [
-                {
-                  mimeType: 'audio/pcm;rate=16000',
-                  data: base64Data,
-                },
-              ],
+              audio: {
+                mimeType: 'audio/pcm;rate=16000',
+                data: base64Data,
+              },
             },
           };
           wsRef.current.send(JSON.stringify(chunkMsg));
+          chunksSentCountRef.current++;
+          if (chunksSentCountRef.current % 12 === 1) {
+            console.log('[Gemini Live] audio chunk sent');
+          }
         }
       };
 
@@ -561,6 +628,12 @@ ${recentHistoryText ? `RECENT CONVERSATION HISTORY:\n${recentHistoryText}` : ''}
       setErrorMessage(msg);
       optionsRef.current.onError?.(msg);
       optionsRef.current.onStatusChange?.('READY');
+      if (wsRef.current) {
+        try {
+          wsRef.current.close();
+        } catch {}
+        wsRef.current = null;
+      }
     }
   }, [connectGeminiLiveWebSocket, handleVadTurnComplete]);
 
