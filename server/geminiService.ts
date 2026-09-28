@@ -211,7 +211,12 @@ export async function streamAnswerGeneration(
     parts: [{ text: promptText }],
   });
 
-  const candidateModels = ['gemini-3.8-flash', 'gemini-3.5-flash-lite'];
+  const candidateModels = [
+    'gemini-3.6-flash',
+    'gemini-3-flash-preview',
+    'gemini-3.8-flash',
+    'gemini-3.5-flash-lite',
+  ];
   const activeKey = options.customApiKey?.trim() || process.env.GEMINI_API_KEY?.trim() || '';
   if (!activeKey) {
     throw new Error('GEMINI_API_KEY is not configured on the server. Please add GEMINI_API_KEY to environment variables or Settings.');
@@ -350,7 +355,12 @@ Ground truth: Adhere strictly to the candidate dossier. Never invent experiences
     },
   ];
 
-  const candidateModels = ['gemini-2.0-flash', 'gemini-2.5-flash', 'gemini-1.5-flash'];
+  const candidateModels = [
+    'gemini-3.6-flash',
+    'gemini-3-flash-preview',
+    'gemini-3.8-flash',
+    'gemini-3.5-flash-lite',
+  ];
   let lastError: any = null;
 
   for (const modelName of candidateModels) {

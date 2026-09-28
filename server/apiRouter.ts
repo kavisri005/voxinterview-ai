@@ -14,7 +14,7 @@ apiRouter.get('/health', (_req: Request, res: Response) => {
   res.json({
     status: 'ok',
     timestamp: Date.now(),
-    modelCascade: ['gemini-3.8-flash', 'gemini-3.5-flash-lite'],
+    modelCascade: ['gemini-3.6-flash', 'gemini-3-flash-preview', 'gemini-3.8-flash', 'gemini-3.5-flash-lite'],
     hasApiKey: Boolean(process.env.GEMINI_API_KEY),
   });
 });
