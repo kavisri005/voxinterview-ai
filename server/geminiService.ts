@@ -82,40 +82,44 @@ export interface GenerateAnswerOptions {
  * Combines ChatGPT-style broad intelligence with candidate dossier truth.
  */
 function buildSystemInstruction(profile?: CandidateProfile): string {
-  let profileSection = 'No candidate profile specified. Answer general/technical questions with deep expertise, and role questions with articulate competence.';
+  let profileSection = 'No candidate profile specified. Answer questions with deep expertise, and role questions with articulate competence.';
 
   if (profile && (profile.name || profile.technicalSkills?.length || profile.projects?.length || profile.experience?.length || profile.testingAutomationSkills?.length)) {
     const role = profile.targetRole || 'Software Professional';
     
-    const techSkills = (profile.technicalSkills || []).join(', ');
-    const languages = (profile.programmingLanguages || []).join(', ');
-    const frameworks = (profile.frameworks || []).join(', ');
-    const testingSkills = (profile.testingAutomationSkills || []).join(', ');
-    const tools = (profile.toolsDatabases || []).join(', ');
+    // Keep dossier compact for minimum latency
+    const techSkills = (profile.technicalSkills || []).slice(0, 12).join(', ');
+    const languages = (profile.programmingLanguages || []).slice(0, 8).join(', ');
+    const frameworks = (profile.frameworks || []).slice(0, 8).join(', ');
+    const testingSkills = (profile.testingAutomationSkills || []).slice(0, 8).join(', ');
+    const tools = (profile.toolsDatabases || []).slice(0, 8).join(', ');
 
     const projects = (profile.projects || [])
+      .slice(0, 3)
       .map(
         (p) =>
-          `"${p.title}" (${p.techStack}): ${p.description}${p.highlights ? ` [Highlights: ${p.highlights}]` : ''}`
+          `"${p.title}" (${p.techStack}): ${p.description.slice(0, 150)}${p.highlights ? ` [Key: ${p.highlights.slice(0, 80)}]` : ''}`
       )
       .join('; ');
 
     const experience = (profile.experience || [])
-      .map((e) => `${e.role} at ${e.company} (${e.period}): ${e.description}`)
+      .slice(0, 2)
+      .map((e) => `${e.role} at ${e.company} (${e.period}): ${e.description.slice(0, 120)}`)
       .join('; ');
 
     const internships = (profile.internships || [])
-      .map((i) => `${i.role} at ${i.company} (${i.period}): ${i.description}`)
+      .slice(0, 2)
+      .map((i) => `${i.role} at ${i.company} (${i.period}): ${i.description.slice(0, 120)}`)
       .join('; ');
 
-    const certs = (profile.certifications || []).filter(Boolean).join(', ');
-    const achievements = (profile.achievements || []).filter(Boolean).join('; ');
+    const certs = (profile.certifications || []).filter(Boolean).slice(0, 5).join(', ');
+    const achievements = (profile.achievements || []).filter(Boolean).slice(0, 4).join('; ');
 
     profileSection = `CANDIDATE DOSSIER (Ground Truth):
 - Name: ${profile.name || 'Candidate'}
 - Target Role / Title: ${role}
 - Contact: ${[profile.email ? `Email: ${profile.email}` : '', profile.phone ? `Phone: ${profile.phone}` : ''].filter(Boolean).join(' | ') || 'N/A'}
-- Professional Summary: ${profile.summary || 'N/A'}
+- Professional Summary: ${(profile.summary || 'N/A').slice(0, 200)}
 - Education: ${profile.degree || ''} ${profile.college ? `at ${profile.college}` : ''} ${profile.gradYear ? `(${profile.gradYear})` : ''}
 - Core Technical Skills: ${techSkills || 'N/A'}
 - Programming Languages: ${languages || 'N/A'}
@@ -127,7 +131,7 @@ function buildSystemInstruction(profile?: CandidateProfile): string {
 - Projects: ${projects || 'N/A'}
 - Certifications: ${certs || 'N/A'}
 - Achievements: ${achievements || 'N/A'}
-${profile.otherInfo ? `- Additional Info: ${profile.otherInfo}` : ''}`;
+${profile.otherInfo ? `- Additional Info: ${profile.otherInfo.slice(0, 120)}` : ''}`;
   }
 
   return `You are VoxInterview AI, a state-of-the-art, general-purpose interview question answering agent and live co-pilot. You combine the broad, accurate reasoning of a top-tier conversational AI with personalized grounded responses.
@@ -138,22 +142,22 @@ CORE OPERATING PRINCIPLES:
 
 2. ADAPTIVE CONTEXT & PERSPECTIVE:
    - When the question is about the candidate (their background, resume, specific projects, decisions, teamwork, past challenges): Speak in a natural, confident first-person style ("I", "in my project...", "my approach was..."). Strictly draw from the CANDIDATE DOSSIER below. NEVER invent non-existent companies, degrees, or projects.
-   - When the question is technical or conceptual (e.g. "How does the virtual DOM work?", "Explain event-driven architecture", "What is an index in SQL?"): Use your deep general model intelligence to give a crystal-clear, accurate explanation, with a small concrete example or syntax snippet when useful.
-   - When the question is coding or algorithmic: Clearly outline the optimal algorithmic approach, time/space complexity, and clean code or pattern when appropriate.
+   - When the question is technical or conceptual: Use deep model intelligence to give a crystal-clear, accurate explanation, with a small concrete example or snippet where useful.
+   - When the question is coding or algorithmic: Clearly outline the optimal algorithmic approach, time/space complexity, and clean code or pattern.
    - When the question is behavioral: Provide a realistic, structured response grounded in the candidate's actual projects and experience.
    - When the question is project-related: Use only the candidate's actual project information and technical stack.
 
 3. CONVERSATION MEMORY & FOLLOW-UP RESOLUTION:
    Maintain active conversation context across turns. For follow-ups like:
-   "What did you use?" / "Why did you choose it?" / "How does it work?" / "Tell me more about that project" / "How would you optimize this approach?"
+   "What did you use?" / "Why did you choose it?" / "How does it work?" / "Tell me more about that project"
    seamlessly resolve pronouns ("it", "that", "this") from previous questions and answers.
 
 4. AMBIGUOUS QUESTIONS:
    If a question is short or ambiguous, infer the most likely interview context and answer naturally. Never ask "could you clarify?" or return "unsupported question" or generic error fallbacks.
 
-5. SPEAKABILITY & CONCISENESS:
-   - Deliver the answer directly without repeating the question or adding conversational throat-clearing ("Sure, I can answer that...").
-   - Keep answers speakable and concise enough for an active interview (typically 2 to 4 crisp sentences, or structured bullet/code points when technical depth is required).
+5. CONCISENESS & SPEED (CRITICAL):
+   - Deliver the answer directly without repeating the question or conversational filler ("Sure, I can help with that...").
+   - Keep generated answers concise: normally 3 to 5 sentences. Speakable and crisp for an active live interview.
 
 ${profileSection}`;
 }
@@ -226,11 +230,11 @@ export async function streamAnswerGeneration(
   // Current turn with specific style modifier
   let promptText = question;
   if (style === 'detailed') {
-    promptText += '\n[Guidance: Provide a thorough, direct explanation with a concrete example or code where helpful, concise enough to speak naturally.]';
+    promptText += '\n[Guidance: Provide a thorough, direct explanation in 4-6 sentences with a concrete example or snippet where helpful, concise enough to speak naturally.]';
   } else if (style === 'bullet') {
-    promptText += '\n[Guidance: Provide a direct opening statement followed by 2-3 crisp bullet points.]';
+    promptText += '\n[Guidance: Provide a direct opening statement followed by 2-3 crisp bullet points (normally 3-5 sentences total).]';
   } else {
-    promptText += '\n[Guidance: Answer directly, accurately, and naturally. If technical, include a small example if useful. If coding, outline approach and code. If about candidate, speak in first person using dossier.]';
+    promptText += '\n[Guidance: Answer directly, accurately, and naturally in strictly 3 to 5 concise sentences. If technical, include a small example if useful. If coding, outline approach and code. If about candidate, speak in first person using dossier.]';
   }
 
   contents.push({
@@ -257,11 +261,15 @@ export async function streamAnswerGeneration(
         systemInstruction: systemInstruction,
         temperature: 0.4,
         topP: 0.9,
-        maxOutputTokens: 600,
-        thinkingConfig: {
-          thinkingBudget: 0,
-        },
+        maxOutputTokens: 350,
       };
+
+      // thinkingBudget is supported on flash models, but rejected with 400 on flash-lite models
+      if (!modelName.includes('lite')) {
+        config.thinkingConfig = {
+          thinkingBudget: 0,
+        };
+      }
 
       const responseStream = await activeAi.models.generateContentStream({
         model: modelName,

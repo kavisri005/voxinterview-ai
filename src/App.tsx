@@ -53,7 +53,7 @@ export default function App() {
         : {
             silenceThresholdMs: 1200,
             answerStyle: 'concise',
-            autoAnswer: true,
+            autoAnswer: false,
             enableSpeechSynthesisPreview: false,
             minWordCountToTrigger: 3,
             customApiKey: '',
@@ -62,7 +62,7 @@ export default function App() {
       return {
         silenceThresholdMs: 1200,
         answerStyle: 'concise',
-        autoAnswer: true,
+        autoAnswer: false,
         enableSpeechSynthesisPreview: false,
         minWordCountToTrigger: 3,
         customApiKey: '',
@@ -134,6 +134,7 @@ export default function App() {
     setErrorMessage,
     startListening,
     stopListening,
+    generateAnswer,
     analyser,
     setDetectedQuestion,
     setGeneratedAnswer,
@@ -142,6 +143,7 @@ export default function App() {
     conversationHistory,
     answerStyle: settings.answerStyle,
     customApiKey: settings.customApiKey,
+    autoAnswer: settings.autoAnswer,
     onStatusChange: (newStatus) => {
       switch (newStatus) {
         case 'CONNECTING':
@@ -203,6 +205,33 @@ export default function App() {
       startListening();
     }
   };
+
+  // Generate Answer for current transcript snapshot
+  const handleGenerateAnswer = useCallback(async () => {
+    const cleanQ = detectedQuestion.trim();
+    if (!cleanQ || isGenerating) return;
+    generationStartTimeRef.current = Date.now();
+    setStatus('ANALYZING...');
+    await generateAnswer(cleanQ);
+  }, [detectedQuestion, isGenerating, generateAnswer]);
+
+  // Keyboard shortcut: Press Enter to trigger GENERATE ANSWER when a question is present
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Enter' && !e.shiftKey && !e.altKey && !e.metaKey) {
+        const target = e.target as HTMLElement;
+        if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
+          return;
+        }
+        if (detectedQuestion.trim() && !isGenerating) {
+          e.preventDefault();
+          handleGenerateAnswer();
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [detectedQuestion, isGenerating, handleGenerateAnswer]);
 
   // Regenerate Answer for currently detected question with optional style
   const handleRegenerate = async (customStyle?: 'concise' | 'detailed' | 'bullet') => {
@@ -513,9 +542,9 @@ export default function App() {
             <div className="p-3.5 rounded-xl bg-slate-900/80 border border-slate-800/80 text-xs text-slate-300 leading-relaxed flex items-start gap-2.5">
               <Sparkles className="w-4 h-4 text-sky-400 shrink-0 mt-0.5" />
               <div>
-                <span className="font-semibold text-white">How it works:</span> Press{' '}
-                <span className="text-emerald-400 font-semibold">START LISTENING</span>, ask or speak any interview question (e.g.{' '}
-                <span className="text-sky-300 italic">"What is polymorphism in Java?"</span>), and pause. Gemini Live API automatically detects the end of speech, understands the question, and streams the spoken answer below.
+                <span className="font-semibold text-white">Live Interview Flow:</span> Press{' '}
+                <span className="text-emerald-400 font-semibold">START LISTENING</span>. The microphone captures audio and transcribes the interviewer's speech into live text immediately on screen. When ready, click{' '}
+                <span className="text-emerald-400 font-bold">GENERATE ANSWER</span> (or press <kbd className="px-1.5 py-0.5 rounded bg-slate-800 border border-slate-700 text-[10px] text-white font-mono">Enter</kbd>). Gemini streams the answer in ~1s. The microphone stays active for the next question!
               </div>
             </div>
           </div>
@@ -542,7 +571,7 @@ export default function App() {
                 )}
               </div>
 
-              <div className="min-h-[70px] bg-slate-950/60 rounded-xl p-4 border border-slate-800/80 flex items-center">
+              <div className="min-h-[85px] bg-slate-950/60 rounded-xl p-4 border border-slate-800/80 flex items-center">
                 {detectedQuestion ? (
                   <p className="text-base sm:text-lg font-bold text-white leading-snug">
                     "{detectedQuestion}"
@@ -553,10 +582,61 @@ export default function App() {
                 ) : (
                   <p className="text-xs sm:text-sm text-slate-500 italic">
                     {isListening
-                      ? 'Listening to interviewer... Question will appear here in real time as they speak.'
+                      ? 'Listening to interviewer... Speech is transcribed into live text immediately as they speak.'
                       : 'Press Start Listening and speak into the microphone.'}
                   </p>
                 )}
+              </div>
+
+              {/* PROMINENT GENERATE ANSWER BUTTON */}
+              <div className="mt-4 pt-3 border-t border-slate-800/60">
+                <button
+                  id="prominent-generate-answer-btn"
+                  onClick={handleGenerateAnswer}
+                  disabled={!detectedQuestion.trim() || isGenerating}
+                  className={`w-full py-3.5 px-6 rounded-xl font-bold text-sm sm:text-base tracking-wide flex items-center justify-center gap-3 transition-all duration-200 shadow-xl ${
+                    !detectedQuestion.trim()
+                      ? 'bg-slate-900/80 border border-slate-800 text-slate-500 cursor-not-allowed'
+                      : isGenerating
+                      ? 'bg-indigo-600/80 text-white cursor-wait'
+                      : 'bg-gradient-to-r from-emerald-500 via-teal-500 to-sky-500 hover:from-emerald-400 hover:via-teal-400 hover:to-sky-400 text-white shadow-emerald-500/25 ring-2 ring-emerald-400/30 hover:scale-[1.01] active:scale-[0.99] animate-pulse'
+                  }`}
+                  title={
+                    !detectedQuestion.trim()
+                      ? 'Transcript must exist before generating answer'
+                      : 'Generate AI interview answer now for the recognized transcript (Enter)'
+                  }
+                >
+                  {isGenerating ? (
+                    <>
+                      <div className="w-5 h-5 rounded-full border-2 border-white border-t-transparent animate-spin" />
+                      <span>GENERATING ANSWER...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Zap className="w-5 h-5 text-amber-300 fill-amber-300" />
+                      <span>GENERATE ANSWER</span>
+                      <span className="hidden sm:inline-block text-[11px] font-mono px-2 py-0.5 rounded bg-black/25 text-white/90 border border-white/20">
+                        ↵ Enter
+                      </span>
+                    </>
+                  )}
+                </button>
+
+                <div className="flex items-center justify-between mt-2 px-1 text-[11px] text-slate-400 font-mono">
+                  <span>
+                    {isListening
+                      ? detectedQuestion.trim()
+                        ? '● Live transcript ready — click to generate answer'
+                        : '● Continuously listening & transcribing speech...'
+                      : '● Microphone is idle'}
+                  </span>
+                  {detectedQuestion.trim() && (
+                    <span className="text-slate-400">
+                      {detectedQuestion.trim().split(/\s+/).filter(Boolean).length} words
+                    </span>
+                  )}
+                </div>
               </div>
             </div>
 
@@ -737,6 +817,36 @@ export default function App() {
                 <>
                   <Mic className="w-5 h-5" />
                   <span>START LISTENING</span>
+                </>
+              )}
+            </button>
+
+            {/* Prominent GENERATE ANSWER Button in Bottom Dock */}
+            <button
+              id="dock-generate-answer-btn"
+              onClick={handleGenerateAnswer}
+              disabled={!detectedQuestion.trim() || isGenerating}
+              className={`flex items-center gap-2 px-5 py-3 rounded-xl font-bold text-xs sm:text-sm tracking-wide transition-all duration-200 shadow-xl ${
+                !detectedQuestion.trim()
+                  ? 'bg-slate-900 border border-slate-800 text-slate-500 cursor-not-allowed opacity-60'
+                  : isGenerating
+                  ? 'bg-indigo-600 text-white cursor-wait'
+                  : 'bg-gradient-to-r from-emerald-500 to-sky-500 hover:from-emerald-400 hover:to-sky-400 text-white shadow-emerald-500/25 ring-2 ring-emerald-400/20 active:scale-95'
+              }`}
+              title="Generate AI Answer (Enter)"
+            >
+              {isGenerating ? (
+                <>
+                  <div className="w-4 h-4 rounded-full border-2 border-white border-t-transparent animate-spin" />
+                  <span>Generating...</span>
+                </>
+              ) : (
+                <>
+                  <Zap className="w-4 h-4 text-amber-300 fill-amber-300" />
+                  <span>GENERATE ANSWER</span>
+                  <span className="hidden md:inline-block text-[10px] font-mono px-1.5 py-0.5 rounded bg-black/20 text-white/80 border border-white/10">
+                    ↵
+                  </span>
                 </>
               )}
             </button>

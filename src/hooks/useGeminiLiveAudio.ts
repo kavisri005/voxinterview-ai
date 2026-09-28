@@ -7,6 +7,7 @@ export interface UseGeminiLiveAudioOptions {
   conversationHistory: ConversationTurn[];
   answerStyle: 'concise' | 'detailed' | 'bullet';
   customApiKey?: string;
+  autoAnswer?: boolean;
   onQuestionUnderstood?: (question: string, category?: QuestionCategory, intent?: string) => void;
   onAnswerChunk?: (chunk: string, fullText: string) => void;
   onAnswerComplete?: (fullText: string, metadata?: { category?: string; intent?: string }) => void;
@@ -264,13 +265,12 @@ ${dossier}`;
     ).trim() || questionAccumulatorRef.current.trim();
 
     if (!finalQuestion || finalQuestion.split(/\s+/).length < 2) return;
-    if (isGeneratingRef.current) return;
 
     const turnTime = Date.now();
     turnCompleteTimeRef.current = turnTime;
-    console.log(`[VOX TIMING] [${new Date(turnTime).toISOString()}] TURN COMPLETE (source: ${source})`);
+    console.log(`[VOX TIMING] [${new Date(turnTime).toISOString()}] TURN COMPLETE (source: ${source}, question: "${finalQuestion}")`);
 
-    // 2. Show the complete question immediately
+    // 2. Show the complete question immediately on screen
     setDetectedQuestion(finalQuestion);
     optionsRef.current.onQuestionUnderstood?.(finalQuestion);
 
@@ -291,9 +291,44 @@ ${dossier}`;
       return;
     }
 
-    // 3. Immediately start generating the answer
-    await streamAnswerForQuestion(finalQuestion);
+    // 3. Only auto-generate if autoAnswer is explicitly enabled
+    if (optionsRef.current.autoAnswer) {
+      if (isGeneratingRef.current) return;
+      await streamAnswerForQuestion(finalQuestion);
+    } else {
+      // Manual flow: Question is on screen, microphone and transcription stay active, awaiting GENERATE ANSWER button
+      if (!isGeneratingRef.current) {
+        optionsRef.current.onStatusChange?.('LISTENING');
+      }
+    }
   }, [streamAnswerForQuestion]);
+
+  // Explicitly generate answer for current transcript snapshot (invoked by GENERATE ANSWER button)
+  const generateAnswer = useCallback(async (overrideQuestion?: string) => {
+    const finalQuestion = (
+      overrideQuestion ||
+      (finalizedSegmentsRef.current + ' ' + currentInterimRef.current).trim() ||
+      questionAccumulatorRef.current.trim() ||
+      detectedQuestion.trim()
+    ).trim();
+
+    if (!finalQuestion) {
+      console.warn('[VOX] Cannot generate answer: No question transcript available yet.');
+      return;
+    }
+
+    if (isGeneratingRef.current) return;
+
+    const turnTime = Date.now();
+    turnCompleteTimeRef.current = turnTime;
+    console.log(`[VOX TIMING] [${new Date(turnTime).toISOString()}] GENERATE ANSWER TRIGGERED (question: "${finalQuestion}")`);
+
+    setDetectedQuestion(finalQuestion);
+    optionsRef.current.onQuestionUnderstood?.(finalQuestion);
+    vadFinalizedRef.current = true;
+
+    await streamAnswerForQuestion(finalQuestion);
+  }, [detectedQuestion, streamAnswerForQuestion]);
 
   // Connects WebSocket to Gemini Live API and verifies setupComplete
   const connectGeminiLiveWebSocket = useCallback(async (): Promise<void> => {
@@ -448,8 +483,11 @@ ${dossier}`;
             vadFinalizedRef.current = false;
             finalizedSegmentsRef.current = '';
             currentInterimRef.current = '';
+            questionAccumulatorRef.current = '';
             answerAccumulatorRef.current = '';
-            setGeneratedAnswer('');
+            // Clear detected question so the new question transcribes cleanly on screen
+            setDetectedQuestion('');
+            // Note: We do NOT clear generatedAnswer here so the user can continue reading the previous answer
           }
 
           // In-progress words updated in real time as the interviewer speaks
@@ -751,16 +789,18 @@ ${dossier}`;
       animFrameRef.current = null;
     }
 
-    // If an unfinalized question was spoken, finalize and generate answer
+    // If an unfinalized question was spoken, update detectedQuestion
     const currentQuestion = (
       finalizedSegmentsRef.current + ' ' + currentInterimRef.current
     ).trim() || questionAccumulatorRef.current.trim();
 
-    if (currentQuestion && !vadFinalizedRef.current && !answerAccumulatorRef.current) {
-      handleVadTurnComplete();
-    } else {
-      optionsRef.current.onStatusChange?.('READY');
+    if (currentQuestion) {
+      setDetectedQuestion(currentQuestion);
+      if (optionsRef.current.autoAnswer && !vadFinalizedRef.current && !answerAccumulatorRef.current) {
+        handleVadTurnComplete();
+      }
     }
+    optionsRef.current.onStatusChange?.('READY');
   }, [handleVadTurnComplete]);
 
   // Cleanup on unmount
@@ -799,6 +839,7 @@ ${dossier}`;
     setErrorMessage,
     startListening,
     stopListening,
+    generateAnswer,
     analyser: analyserRef.current,
     setDetectedQuestion,
     setGeneratedAnswer,

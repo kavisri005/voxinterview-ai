@@ -99,8 +99,51 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             })}
           </div>
           <p className="text-[11px] text-slate-500">
-            When interviewer stops talking for this duration, VoxInterview marks question complete and generates the answer.
+            Duration of silence to mark interviewer speech segment complete.
           </p>
+        </div>
+
+        {/* Answer Trigger Mode */}
+        <div className="space-y-3">
+          <label className="text-xs font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+            <Zap className="w-4 h-4 text-emerald-400" />
+            Answer Generation Trigger
+          </label>
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              onClick={() => onUpdateSettings({ ...settings, autoAnswer: false })}
+              className={`p-3 rounded-xl border text-left transition ${
+                !settings.autoAnswer
+                  ? 'bg-emerald-500/10 border-emerald-500/50 text-white shadow-sm shadow-emerald-500/10'
+                  : 'bg-slate-900/60 border-slate-800 text-slate-400 hover:border-slate-700 hover:text-slate-200'
+              }`}
+            >
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-xs font-bold text-white">Manual Button (Recommended)</span>
+                {!settings.autoAnswer && <Check className="w-3.5 h-3.5 text-emerald-400" />}
+              </div>
+              <p className="text-[10px] text-slate-400 leading-tight">
+                Click GENERATE ANSWER or press Enter when the interviewer finishes speaking.
+              </p>
+            </button>
+
+            <button
+              onClick={() => onUpdateSettings({ ...settings, autoAnswer: true })}
+              className={`p-3 rounded-xl border text-left transition ${
+                settings.autoAnswer
+                  ? 'bg-emerald-500/10 border-emerald-500/50 text-white shadow-sm shadow-emerald-500/10'
+                  : 'bg-slate-900/60 border-slate-800 text-slate-400 hover:border-slate-700 hover:text-slate-200'
+              }`}
+            >
+              <div className="flex items-center justify-between mb-1">
+                <span className="text-xs font-bold text-white">Automatic on Silence</span>
+                {settings.autoAnswer && <Check className="w-3.5 h-3.5 text-emerald-400" />}
+              </div>
+              <p className="text-[10px] text-slate-400 leading-tight">
+                Auto-generates answer when silence threshold is detected.
+              </p>
+            </button>
+          </div>
         </div>
 
         {/* Answer Style */}
